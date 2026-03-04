@@ -144,11 +144,8 @@ class BaseQLAgent(Agent):
     # Shared: update()
     # ------------------------------------------------------------------
     #
-    # Note on target networks: Binary originally used online networks
-    # to select next actions (Double DQN), while Dual used target networks
-    # for both selection and evaluation. We follow the Double DQN approach
-    # (select with online via select_actions, evaluate with target nets)
-    # as it's more standard and reduces overestimation bias.
+    # Note on target networks: We follow the Double DQN approach
+    # (select with online via select_actions with q nets, evaluate with target nets).
     #
 
     def _update_single_q(
@@ -251,7 +248,7 @@ class BaseQLAgent(Agent):
     def _extra_save_state(self) -> dict:
         """Override to add subclass-specific fields to checkpoint."""
         return {}
-    
+
     def _load_extra_state(self, checkpoint: dict):
         """Override to restore subclass-specific fields from checkpoint."""
         pass
