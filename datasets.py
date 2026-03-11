@@ -23,10 +23,10 @@ class TransitionDataset(Dataset):
         # [online RL]: append to the lists as agent explores the environment 
 
     def __len__(self):
-        return len(self.state_sqs)
+        pass #not implemented 
 
     def __getitem__(self, idx): 
-        return [self.state_sqs[idx], self.action_sqs[idx], self.reward_sqs[idx]]
+        pass #not implemented 
 
     def prepare_features(self) -> Tuple[np.ndarray, np.ndarray]:
         """
