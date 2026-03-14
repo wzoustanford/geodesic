@@ -51,14 +51,28 @@ TRAJ_ID_COL = 'subject_id'
 # Time column
 TIME_COL = 'time_hour'
 
-# Outcome columns
-DEATH_COL = 'death'
+# Outcome columns 
+DEATH_COL = 'death' 
 
-# ==================== Preprocessing Parameters ====================
+# ==================== Preprocessing Parameters ==================== 
 
-# Categorical features that need encoding
-CATEGORICAL_FEATURES = ['ethnicity', 'gender']
+# Categorical features that need encoding 
+CATEGORICAL_FEATURES = ['ethnicity', 'gender'] 
 
-# ==================== Data Path ====================
+# ==================== Data Path ==================== 
 
-DATA_PATH = 'sample_data_oviss.csv'
+DATA_PATH = 'sample_data_oviss.csv' 
+COMBINED_OR_TRAIN_DATA_PATH = DATA_PATH 
+EVAL_DATA_PATH = ''
+
+# ==================== Dual dataset settings ==================== 
+
+DUAL_DATASET_MODE = False
+
+# ==================== IRL settings ==================== 
+
+MIN_SEQ_LEN_UNET = 7
+
+# ==================== Ablation testing settings ==================== 
+
+REWARD_COMBINE_LAMBDA = False 
