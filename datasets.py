@@ -1,9 +1,10 @@
 import torch 
-from torch.utils.data import DataLoader
+from torch.utils.data import Dataset, DataLoader
 from typing import Tuple, List, Dict
 import numpy as np, pandas as pd
 from sklearn.preprocessing import StandardScaler
 from projects.vaso.utils import compute_vaso_clinician_rewards
+from sklearn.model_selection import train_test_split
 
 #import logging #[logging to be implemented later to replace print()]
 
@@ -18,7 +19,7 @@ RL Dataset design principles:
 - Goal was not super encapsulated/oop, but get to efficient v1 by realizing above goals 
 """
 
-class RLDataLoader(DataLoader):
+class RLDataset(Dataset):
     def __init__(self, data): 
         self.data = data 
 
@@ -26,33 +27,58 @@ class RLDataLoader(DataLoader):
         return len(self.data)
     
     def __getitem__(self, idx): 
-        return self.data[idx] 
+        return (
+            self.data['states'][idx],
+            self.data['actions'][idx],
+            self.data['rewards'][idx],
+            self.data['next_states'][idx],
+            self.data['dones'][idx],
+            self.data['n_transitions'],
+            self.data['n_trajs'],
+            self.data['state_features'],
+        )
 
-class RLDataset:
-    def __init__(self, data_config, reward_model='manual'):
+class RLDataCollection:
+    def __init__(self, data_config, reward_model=None):
         # data config: configuration file for data 
         # from_csv_file: the csv file containing offline RL data 
         # reward_source: for IRL research, which rewards source, manual defined or learned reward model 
 
         self.data_config = data_config #pandas dataframe 
-        self.data_config.REWARD_MODEL = reward_model 
-        self.scalar = StandardScaler()
+
+        if reward_model is None: 
+            self.reward_model = self.data_config.REWARD_MODEL 
+        else: 
+            self.reward_model = reward_model 
         
+        self.scaler = StandardScaler()
+        
+        self.random_seed = data_config.RANDOM_SEED 
+
         rewards = None # to implement for cases where offline RL data includes rewards 
 
         # [extention]: distributed data ETL pre-processing using pyspark and pandas 
         train_data, val_data, test_data = self.prepare_data() 
         #states, actions = self.normalize_process_features(data) # [extension]: implement this later for normalization and one hot features for category features 
+        train_dataset = RLDataset(train_data) 
+        val_dataset = RLDataset(val_data)
+        test_dataset = RLDataset(test_data)
 
-        self.train_loader = RLDataLoader(train_data)
-        self.val_loader = RLDataLoader(val_data)
-        self.test_loader = RLDataLoader(test_data)
+        self.train_loader = DataLoader(train_dataset, batch_size=data_config.TRAIN_BATCH_SIZE, shuffle=data_config.SHUFFLE)
+        self.val_loader = DataLoader(val_dataset, batch_size=data_config.VAL_BATCH_SIZE, shuffle=data_config.SHUFFLE)
+        self.test_loader = DataLoader(test_dataset, batch_size=data_config.TEST_BATCH_SIZE, shuffle=data_config.SHUFFLE)
 
         # [online RL]: append to the lists as agent explores the environment 
     
     def get_traj_ids(self, data) -> np.ndarray:
         """Get all unique patient IDs"""
         return data[self.data_config.TRAJ_ID_COL].unique()
+
+    def get_traj_data(self, traj_id: int, data, data_config) -> pd.DataFrame:
+        """Get data for a specific patient"""
+        if data is None:
+            raise ValueError("Data not loaded. Call load_data() first.")
+        return data[data[data_config.TRAJ_ID_COL] == traj_id].copy()
 
     def load_offline_trajectorys_from_file(self, filepath) -> pd.DataFrame:
         """
@@ -115,7 +141,7 @@ class RLDataset:
             eval_traj_ids = self.get_traj_ids(eval_data)
 
             # Split eval data 50/50 into val and test
-            val_traj_ids, test_traj_ids = self.splitter.split_patients(
+            val_traj_ids, test_traj_ids = self.split_data(
                 eval_traj_ids,
                 train_ratio=0.0,
                 val_ratio=0.5,
@@ -132,15 +158,15 @@ class RLDataset:
 
             # Process each split
             print("4. Processing transitions...")
-            train_data = self._build_buffer_from_split(train_traj_ids, self.data_config.STATE_FEATURES, 'train', train_data)
-            val_data = self._build_buffer_from_split(val_traj_ids, self.data_config.STATE_FEATURES, 'val', eval_data)
-            test_data = self._build_buffer_from_split(test_traj_ids, self.data_config.STATE_FEATURES, 'test', eval_data)
+            train_data = self._build_buffer_from_split(train_traj_ids, self.data_config.STATE_COLUMNS, 'train', train_data)
+            val_data = self._build_buffer_from_split(val_traj_ids, self.data_config.STATE_COLUMNS, 'val', eval_data)
+            test_data = self._build_buffer_from_split(test_traj_ids, self.data_config.STATE_COLUMNS, 'test', eval_data)
         else:
             # SINGLE-DATASET MODE (original behavior)
             print("1. Loading and splitting data...")
             data = self.load_offline_trajectorys_from_file(self.data_config.COMBINED_OR_TRAIN_DATA_PATH)
             traj_ids = self.get_traj_ids(data)
-            train_traj_ids, val_traj_ids, test_traj_ids = self.splitter.split_patients(traj_ids)
+            train_traj_ids, val_traj_ids, test_traj_ids = self.split_data(traj_ids, self.data_config.TRAIN_RATIO, self.data_config.VAL_RATIO, self.data_config.TEST_RATIO)
 
             print(f"   Train: {len(train_traj_ids)} patients")
             print(f"   Val:   {len(val_traj_ids)} patients")
@@ -152,9 +178,9 @@ class RLDataset:
 
             # Process each split separately
             print("3. Processing transitions...")
-            train_data = self._build_buffer_from_split(train_traj_ids, self.data_config.STATE_FEATURES, 'train', data)
-            val_data = self._build_buffer_from_split(val_traj_ids, self.data_config.STATE_FEATURES, 'val', data)
-            test_data = self._build_buffer_from_split(test_traj_ids, self.data_config.STATE_FEATURES, 'test', data)
+            train_data = self._build_buffer_from_split(train_traj_ids, self.data_config.STATE_COLUMNS, 'train', data)
+            val_data = self._build_buffer_from_split(val_traj_ids, self.data_config.STATE_COLUMNS, 'val', data)
+            test_data = self._build_buffer_from_split(test_traj_ids, self.data_config.STATE_COLUMNS, 'test', data)
 
         # If using learned rewards, recompute rewards now that data is normalized 
         if False: # [implement IRL learned rewards later] self.reward_model != 'manual': 
@@ -165,6 +191,62 @@ class RLDataset:
         print("\n Data pipeline complete!")
 
         return train_data, val_data, test_data
+
+    def split_data(self, patient_ids: np.ndarray,
+                      train_ratio: float,
+                      val_ratio: float,
+                      test_ratio: float) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """
+        Split patient IDs into train/val/test sets
+
+        Args:
+            patient_ids: Array of all patient IDs
+            train_ratio: Proportion for training (default 0.70)
+            val_ratio: Proportion for validation (default 0.15)
+            test_ratio: Proportion for testing (default 0.15)
+
+        Returns:
+            Tuple of (train_patients, val_patients, test_patients)
+        """
+        assert abs(train_ratio + val_ratio + test_ratio - 1.0) < 1e-6, \
+            "Ratios must sum to 1.0"
+
+        # Special case: train_ratio=0.0 means we only want val and test splits
+        # (used in dual-dataset mode where all train data comes from another dataset)
+        if train_ratio == 0.0:
+            # Split directly into val and test
+            # test_ratio / (val_ratio + test_ratio) gives relative test size
+            relative_test_size = test_ratio / (val_ratio + test_ratio)
+            val_patients, test_patients = train_test_split(
+                patient_ids,
+                test_size=relative_test_size,
+                random_state=self.random_seed
+            )
+            train_patients = np.array([])  # Empty train set
+        else:
+            # Standard two-step split
+            # First split: train+val vs test
+            train_val_patients, test_patients = train_test_split(
+                patient_ids,
+                test_size=test_ratio,
+                random_state=self.random_seed
+            )
+
+            # Second split: train vs val
+            # Calculate validation size relative to train+val
+            val_size_relative = val_ratio / (train_ratio + val_ratio)
+
+            train_patients, val_patients = train_test_split(
+                train_val_patients,
+                test_size=val_size_relative,
+                random_state=self.random_seed
+            )
+
+        self.train_patients = train_patients
+        self.val_patients = val_patients
+        self.test_patients = test_patients
+
+        return train_patients, val_patients, test_patients
 
     def _build_buffer_from_split(self, traj_list: np.ndarray, state_features: list, split_name: str, data) -> Dict: 
         """
@@ -183,25 +265,24 @@ class RLDataset:
         all_rewards = []
         all_next_states = []
         all_dones = []
-        all_traj_ids = []
+        all_patient_ids = []
         
         # Group transitions by patient for patient-aware batching
-        traj_groups = {}
         current_idx = 0
 
         for traj_id in traj_list:
-            data =self.get_traj_ids(data)
+            traj =self.get_traj_data(traj_id, data, self.data_config)
 
             if len(data) < 2:  # Need at least 2 timesteps
                 continue
             
             # Extract states
-            states = data[state_features].values
+            states = traj[state_features].values
 
-            actions = data[self.data_config.ACTION_COLUMNS]
+            actions = traj[self.data_config.ACTION_COLUMNS].values
 
             # Get patient mortality outcome (for manual reward if needed)
-            mortality = int(data[self.data_config.DEATH_COL].iloc[-1])
+            mortality = int(traj[self.data_config.DEATH_COL].iloc[-1])
 
             # Store starting index for this patient
             traj_start_idx = current_idx
@@ -217,7 +298,20 @@ class RLDataset:
                 all_dones.append(1.0 if is_terminal else 0.0)
 
                 # Initial reward (will be recomputed if using learned rewards)
-                if self.reward_model != 'manual':
+                if self.data_config.REWARD_MODEL == 'manual':
+                    # Use manual reward
+                    reward = compute_vaso_clinician_rewards(
+                        states, actions, t,
+                        is_terminal, mortality, state_features
+                    )
+                elif self.data_config.REWARD_MODEL == 'mortality_only':
+                    # Mortality-only reward: 1 for death at terminal, 0 otherwise
+                    # This is a sparse binary signal at the end of trajectory
+                    if is_terminal and mortality == 1:
+                        reward = 1.0  # Death penalty signal
+                    else:
+                        reward = 0.0
+                else:
                     if self.reward_combine_lambda is not None:
                         # Compute manual reward for later combination with IRL reward
                         reward = compute_vaso_clinician_rewards(
@@ -227,27 +321,12 @@ class RLDataset:
                     else:
                         # Placeholder - will be replaced by IRL reward after normalization
                         reward = 0.0
-                elif self.reward_model == 'mortality_only':
-                    # Mortality-only reward: 1 for death at terminal, 0 otherwise
-                    # This is a sparse binary signal at the end of trajectory
-                    if is_terminal and mortality == 1:
-                        reward = 1.0  # Death penalty signal
-                    else:
-                        reward = 0.0
-                else:
-                    # Use manual reward
-                    reward = compute_vaso_clinician_rewards(
-                        states, actions, t,
-                        is_terminal, mortality, state_features
-                    )
+
                 all_rewards.append(reward)
 
                 all_patient_ids.append(traj_id)
                 current_idx += 1
 
-            # Store patient group info
-            traj_groups[traj_id] = (traj_start_idx, current_idx)
-        
         # Convert to arrays
         all_states = np.array(all_states, dtype=np.float32)
         all_next_states = np.array(all_next_states, dtype=np.float32)
@@ -263,15 +342,8 @@ class RLDataset:
             all_states_norm = self.scaler.transform(all_states)
         all_next_states_norm = self.scaler.transform(all_next_states)
 
-        # Store patient groups
-        if split_name == 'train':
-            self.train_traj_groups = traj_groups
-        elif split_name == 'val':
-            self.val_traj_groups = traj_groups
-        else:
-            self.test_traj_groups = traj_groups
 
-        print(f"   {split_name}: {len(all_states)} transitions from {len(traj_groups)} patients")
+        print(f"   {split_name}: {len(all_states)} transitions ")
 
         return {
             'states': all_states_norm,
@@ -279,10 +351,8 @@ class RLDataset:
             'rewards': all_rewards,
             'next_states': all_next_states_norm,
             'dones': all_dones,
-            'traj_ids': all_traj_ids,
             'n_transitions': len(all_states),
-            'n_trajs': len(traj_groups),
-            'traj_groups': traj_groups,
+            'n_trajs': len(traj_list),
             'state_features': state_features
         }
 
@@ -321,8 +391,7 @@ class RLDataset:
                     has_nulls.append((feature, missing_count, pct))
                     all_good = False
                 else:
-                    if self.verbose:
-                        print(f"✓  {feature}: OK")
+                    print(f"✓  {feature}: OK")
         
         # Summary
         print("-"*60)
