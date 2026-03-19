@@ -64,3 +64,17 @@ CATEGORICAL_FEATURES = ['ethnicity', 'gender']
 # ==================== Data Path ====================
 
 DATA_PATH = 'sample_data_oviss.csv'
+COMBINED_OR_TRAIN_DATA_PATH = DATA_PATH 
+EVAL_DATA_PATH = ''
+
+# ==================== Dual dataset settings ==================== 
+
+DUAL_DATASET_MODE = False
+
+# ==================== IRL settings ==================== 
+
+MIN_SEQ_LEN_UNET = 7
+
+# ==================== Ablation testing settings ==================== 
+
+REWARD_COMBINE_LAMBDA = False
