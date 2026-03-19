@@ -42,6 +42,10 @@ TRAIN_RATIO = 0.70
 VAL_RATIO = 0.15
 TEST_RATIO = 0.15
 
+TRAIN_BATCH_SIZE = 128 
+VAL_BATCH_SIZE = 1024 
+TEST_BATCH_SIZE = 1024 
+
 # Random seed for reproducibility
 RANDOM_SEED = 42
 
@@ -76,3 +80,7 @@ MIN_SEQ_LEN_UNET = 7
 # ==================== Ablation testing settings ==================== 
 
 REWARD_COMBINE_LAMBDA = False 
+
+# ==================== Reward model ==================== 
+
+REWARD_MODEL = 'manual' 
