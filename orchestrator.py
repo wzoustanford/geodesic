@@ -1,43 +1,66 @@
-import torch
-from datasets import RLDataset
+import torch, time
+from datasets import RLDataCollection
 from agents import MultinomialActionQLAgent
-#import configs.vaso_single_action_data_config as data_config
 
 class Orchestrator:
-    def __init__(self, data_config, agent):
-        self.dataset = RLDataset(data_config)
-        self.agent = MultinomialActionQLAgent(state_dim=7, a2_bins = 5)
+    def __init__(self, agent , num_epochs, data_config):
+        self.data_collection = RLDataCollection(data_config)
+        self.agent = agent
         
-        return
+        self.num_epochs = num_epochs
     
     def start(self): 
         # ------------------------------------------------------------------
-        # TODO: start()
+        # start()
         # ------------------------------------------------------------------
-        # start orchestration, includes training. 
-        # The training loop is ~130 lines duplicated almost verbatim.
+        # start orchestration, includes environment play and training. 
         # Shared structure:
         #   1. Print header / hyperparameters
-        #   2. dataset.prepare_data() → train/val/test
-        for epoch in range(self.model_config.num_epochs): 
-            for (index, batch) in enumerate(self.dataset.train_loader): 
-                
+        start_time = time.time()
+        print('-'*10 + 'starting training' + '-'*10)
+        for epoch in range(self.num_epochs): 
+            for batch_idx, batch in enumerate(self.data_collection.train_loader):
+                if batch_idx % 100 == 0: 
+                    print(str(batch_idx), end='..') 
+                #print(features)
+                train_metrics = self.agent.update(
+                    batch[0], # states 
+                    batch[1], # actions
+                    batch[2], # rewards 
+                    batch[3], # next_states 
+                    batch[4], # dones 
+                )
+                # Accumulate metrics
+                for key in train_metrics:
+                    train_metrics[key] += train_metrics.get(key, 0)
+            
+            # Average metrics
+            for key in train_metrics:
+                train_metrics[key] /= len(self.data_collection.train_loader)
+            
+            print('\n'+'-'*5 + f'validating ... training done for epoch:{epoch}' + '-'*5)
+            val_batch = next(iter(self.data_collection.val_loader))
+            val_q = self.agent.validate(
+                val_batch[0],
+                val_batch[1],
+            )
+            print('<'*2 + 'validation loss: {val_loss}' + '<'*2)
+            # Log progress 
+            if (epoch + 1) % 10 == 0:
+                elapsed = time.time() - start_time
+                avg_td_loss = (train_metrics['q1_loss'] + train_metrics['q2_loss']) / 2
+                print(f"Epoch {epoch+1}: "
+                    f"TD Loss={avg_td_loss:.4f} (Q1={train_metrics['q1_loss']:.4f}, Q2={train_metrics['q2_loss']:.4f}), "
+                    #f"CQL Loss (Q1={train_metrics['cql1_loss']:.4f}, Q2={train_metrics['cql2_loss']:.4f}), "
+                    f"Val Q={val_q:.4f}, "
+                    f"Best Val Q={self.agent.best_val_q:.4f}, "
+                    f"Time={elapsed/60:.1f}min", flush=True)
+            
+        # Save final model
+        self.agent.save(self.agent.get_save_path('final'))
 
-        #   3. Epoch loop:
-        #      a. Set q1/q2 to train mode
-        #      b. Batch loop: sample batch → convert to tensors → self.update()
-        #         → accumulate metrics
-        #      c. Average metrics over batches
-        #      d. Validation: set eval mode → sample val batches → compute Q-values
-        #      e. Save best model if val improves
-        #      f. Print progress every N epochs
-        #   4. Save final model
-        #
-        # Differences to handle:
-        #   - Discrete's train() has reward-model loading logic (should arguably live
-        #     outside the agent, in a training script or Dataset subclass)
-        #   - Discrete's validation converts continuous→discrete actions (handled by
-        #     _transform_actions hook)
-        #   - Different print messages / model naming conventions
-        #     → parameterize via _agent_name() or constructor arg
-        #
+        total_time = time.time() - start_time
+        print(f"\n({self.agent.experiment_prefix}) completed in {total_time/60:.1f} minutes!", flush=True)
+        print("Models saved:", flush=True)
+        print(f"  - {self.agent.get_save_path('best')}", flush=True)
+        print(f"  - {self.agent.get_save_path('final')}", flush=True)
