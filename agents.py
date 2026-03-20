@@ -8,7 +8,7 @@ import os
 import time
 from typing import Dict, Tuple
 from models import BinaryActionQNetwork, MultinomialActionQNetwork
-from dataset import Dataset
+
 
 # ============================================================================
 # Abstract Base Agent
@@ -68,6 +68,8 @@ class BaseQLAgent(Agent):
         tau: float = 0.8,
         lr: float = 3e-3,
         grad_clip: float = 1.0,
+        save_dir='./checkpoints/',
+        experiment_prefix='rl_',
         device: str = 'cuda' if torch.cuda.is_available() else 'cpu'
     ):
         self.state_dim = state_dim
@@ -91,7 +93,14 @@ class BaseQLAgent(Agent):
         self.q1_optimizer = optim.Adam(self.q1.parameters(), lr=lr, weight_decay=1e-5)
         self.q2_optimizer = optim.Adam(self.q2.parameters(), lr=lr, weight_decay=1e-5)
 
+        # Training loop variables 
         self.training_step = 0
+        self.best_val_q = -float('inf')
+        self.save_dir = save_dir
+        if self.save_dir == './checkpoints/':
+            os.system('mkdir ./checkpoints/')
+        self.experiment_prefix = experiment_prefix
+
 
     # ------------------------------------------------------------------
     # Abstract hooks — subclasses MUST implement these
@@ -195,19 +204,33 @@ class BaseQLAgent(Agent):
         next_states: torch.Tensor,
         dones: torch.Tensor
     ) -> Dict[str, float]:
-        """
-        Update Q-networks using TD learning + optional CQL penalty.
+        """ 
+        Update Q-networks using TD learning 
 
-        Args:
-            states: [batch_size, state_dim]
-            actions: raw actions from dataset (converted via _transform_actions)
-            rewards: [batch_size]
-            next_states: [batch_size, state_dim]
-            dones: [batch_size] terminal flags (0 or 1)
+        Args: 
+            states: [batch_size, state_dim] 
+            actions: raw actions from dataset (converted via _transform_actions) 
+            rewards: [batch_size] 
+            next_states: [batch_size, state_dim] 
+            dones: [batch_size] terminal flags (0 or 1) 
 
         Returns:
             Dictionary of loss metrics
         """
+
+        # set train status for sub models 
+        self.q1.train()
+        self.q2.train()
+        self.q1_target.train()
+        self.q2_target.train()
+
+        # Convert to tensors
+        states = torch.FloatTensor(states).to(self.device)
+        actions = torch.FloatTensor(actions).to(self.device)
+        rewards = torch.FloatTensor(rewards).to(self.device)
+        next_states = torch.FloatTensor(next_states).to(self.device)
+        dones = torch.FloatTensor(dones).to(self.device)
+
         # 1. Convert dataset actions to network-ready format
         actions = self._transform_actions(actions)
 
@@ -242,6 +265,33 @@ class BaseQLAgent(Agent):
         }
 
     # ------------------------------------------------------------------
+    # Shared: validate() 
+    # ------------------------------------------------------------------
+    def validate(self, states, actions):
+        # Validation phase
+        self.q1.eval()
+        self.q2.eval()
+        self.q1_target.eval()
+        self.q2_target.eval()
+        
+        with torch.no_grad():
+            states = torch.FloatTensor(states).to(self.device)
+            actions = torch.FloatTensor(actions).to(self.device)
+            
+            # Convert continuous actions to discrete for validation 
+            actions = self._transform_actions(actions)
+
+            val_q1 = self.q1(states, actions).squeeze()
+            val_q2 = self.q2(states, actions).squeeze()
+            val_q = torch.min(val_q1, val_q2)
+            
+            val_q = val_q.mean().item()
+        
+        self.save_best_val_q_model(val_q, self.get_save_path('best'))
+        
+        return val_q
+
+    # ------------------------------------------------------------------
     # Shared: save() / load()
     # ------------------------------------------------------------------
 
@@ -252,6 +302,16 @@ class BaseQLAgent(Agent):
     def _load_extra_state(self, checkpoint: dict):
         """Override to restore subclass-specific fields from checkpoint."""
         pass
+
+    def get_save_path(self, postfix: str):
+        return f'{self.save_dir}/{self.experiment_prefix}_{postfix}.pt'
+
+    def save_best_val_q_model(self, val_q: float, path: str):
+        # Save best model
+        if val_q > self.best_val_q:
+            print('<'*3+f'best q val model found. val_loss: {val_q:.3f}. prev_best_val_loss: {self.best_val_q:.3f}. saving to {path}')
+            self.best_val_q = val_q
+            self.save(path)
 
     def save(self, path: str):
         checkpoint = {
@@ -432,7 +492,7 @@ class MultinomialActionQLAgent(DiscreteQLAgent):
         bin_edges = torch.tensor(self.a2_bin_edges[1:], device=actions.device)
         # right=True matches np.digitize behavior: exact boundary → higher bin
         a2_bin = torch.clamp(
-            torch.bucketize(actions[:, 1], bin_edges, right=True),
+            torch.bucketize(actions[:, 1].contiguous(), bin_edges, right=True),
             0, self.a2_bins - 1
         )
         return a1_idx * self.a2_bins + a2_bin
@@ -443,9 +503,13 @@ class MultinomialActionQLAgent(DiscreteQLAgent):
     def _load_extra_state(self, checkpoint: dict):
         self.a2_bins = checkpoint.get('a2_bins', self.a2_bins)
     
-    # MultinomialAction-specific helpers (not part of the base interface)
+    def get_save_path(self, postfix: str):
+        return f'{self.save_dir}/{self.experiment_prefix}_a2_bins{self.a2_bins}_{postfix}.pt'
+
+    # MultinomialAction-specific helpers 
 
     def continuous_to_discrete_action(self, continuous_action: np.ndarray) -> int:
+        # [note] helper function, not used 
         """Convert [a1, a2] → discrete action index."""
         a1, a2 = continuous_action
         a1_idx = int(a1)
@@ -454,6 +518,7 @@ class MultinomialActionQLAgent(DiscreteQLAgent):
         return a1_idx * self.a2_bins + a2_bin
 
     def discrete_to_continuous_action(self, action_idx: int) -> np.ndarray:
+        # [note] helper function, not used 
         """Convert discrete action index → [a1, a2]."""
         a1_idx = action_idx // self.a2_bins
         a2_bin = action_idx % self.a2_bins

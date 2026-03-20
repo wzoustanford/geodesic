@@ -5,7 +5,6 @@ import numpy as np, pandas as pd
 from sklearn.preprocessing import StandardScaler
 from projects.vaso.utils import compute_vaso_clinician_rewards
 from sklearn.model_selection import train_test_split
-
 #import logging #[logging to be implemented later to replace print()]
 
 """
@@ -24,7 +23,7 @@ class RLDataset(Dataset):
         self.data = data 
 
     def __len__(self):
-        return len(self.data)
+        return len(self.data['states'])
     
     def __getitem__(self, idx): 
         return (
@@ -59,15 +58,16 @@ class RLDataCollection:
 
         # [extention]: distributed data ETL pre-processing using pyspark and pandas 
         train_data, val_data, test_data = self.prepare_data() 
+        
         #states, actions = self.normalize_process_features(data) # [extension]: implement this later for normalization and one hot features for category features 
         train_dataset = RLDataset(train_data) 
         val_dataset = RLDataset(val_data)
         test_dataset = RLDataset(test_data)
 
         self.train_loader = DataLoader(train_dataset, batch_size=data_config.TRAIN_BATCH_SIZE, shuffle=data_config.SHUFFLE)
-        self.val_loader = DataLoader(val_dataset, batch_size=data_config.VAL_BATCH_SIZE, shuffle=data_config.SHUFFLE)
-        self.test_loader = DataLoader(test_dataset, batch_size=data_config.TEST_BATCH_SIZE, shuffle=data_config.SHUFFLE)
-
+        self.val_loader = DataLoader(val_dataset, batch_size=data_config.VAL_BATCH_SIZE, shuffle=True)
+        self.test_loader = DataLoader(test_dataset, batch_size=data_config.TEST_BATCH_SIZE, shuffle=True)
+        
         # [online RL]: append to the lists as agent explores the environment 
     
     def get_traj_ids(self, data) -> np.ndarray:
@@ -175,7 +175,7 @@ class RLDataCollection:
             # Encode categorical features
             print("2. Encoding categorical features...")
             data = self.encode_categorical_features(data)
-
+            
             # Process each split separately
             print("3. Processing transitions...")
             train_data = self._build_buffer_from_split(train_traj_ids, self.data_config.STATE_COLUMNS, 'train', data)
@@ -327,7 +327,8 @@ class RLDataCollection:
                 all_patient_ids.append(traj_id)
                 current_idx += 1
 
-        # Convert to arrays
+        # Convert to arrays 
+        # [refactor]: consolidate the np.array and torch.FloatTensor cast and the sklearn scalar transform 
         all_states = np.array(all_states, dtype=np.float32)
         all_next_states = np.array(all_next_states, dtype=np.float32)
         all_actions = np.array(all_actions, dtype=np.float32)
