@@ -5,7 +5,6 @@ import numpy as np, pandas as pd
 from sklearn.preprocessing import StandardScaler
 from projects.vaso.utils import compute_vaso_clinician_rewards
 from sklearn.model_selection import train_test_split
-import pdb
 #import logging #[logging to be implemented later to replace print()]
 
 """
