@@ -5,10 +5,7 @@ Geodesic: shortest path to production deployment of reinforcement learning
 
 Applications: Robotics, VLA, LLM Post-training, RL research 
 
-Replay buffer Schema: 
-## Dataset Schema
-
-## Dataset Schema
+## RLDataset Schema 
 
 | Field | Type | Shape | Description |
 |---|---|---|---|
