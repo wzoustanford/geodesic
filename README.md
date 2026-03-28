@@ -8,7 +8,10 @@ Applications: Robotics, VLA, LLM Post-training, RL research
 Replay buffer Schema: 
 ## Dataset Schema
 
+## Dataset Schema
+
 | Field | Type | Shape | Description |
+|---|---|---|---|
 | `states` | `np.ndarray` | `(N, S)` | Normalized observed states for each transition |
 | `actions` | `np.ndarray` | `(N, A)` | Actions taken at each transition |
 | `rewards` | `np.ndarray` | `(N,)` | Scalar reward received after each transition |
