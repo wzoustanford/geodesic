@@ -23,6 +23,14 @@ uv sync
 
 Python 3.12 is required — mujoco and metaworld do not yet have wheels for newer versions. 
 
+## Metaworld MT10 
+python -m tests.ut_online_rl_metaworld_mt10 
+
+## Offline RL 
+# prepare/generate your dataset (sample_data_oviss.csv), with 18 features and 1 action defined in configs/vaso_single_action_data_config, in trajectory sequences 
+# the data will be offline trajetories already collected, and will be split into train/val/test 
+python -m tests.ut_offline_rl 
+
 ## RLDataset Schema 
 
 | Field | Type | Shape | Description |
