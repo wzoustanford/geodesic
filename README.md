@@ -1,7 +1,7 @@
 ![alt text](imgs/rl_sys_uml.png)
 
 ## Geodesic: Open-source Reinforcement Learning Framework 
-Geodesic: shortest path to production deployment of reinforcement learning 
+Geodesic: shortest path to deployment for reinforcement learning 
 
 Applications: Robotics, VLA, LLM Post-training, RL research 
 
@@ -14,14 +14,14 @@ curl -LsSf https://astral.sh/uv/install.sh | sh
 
 Clone the repo and install dependencies:
 ```bash
-git clone <repo-url>
+git clone https://github.com/wzoustanford/geodesic.git 
 cd geodesic
 uv venv --python 3.12
 source .venv/bin/activate
 uv sync
 ```
 
-Python 3.12 is required — mujoco and metaworld do not yet have wheels for newer versions.
+Python 3.12 is required — mujoco and metaworld do not yet have wheels for newer versions. 
 
 ## RLDataset Schema 
 

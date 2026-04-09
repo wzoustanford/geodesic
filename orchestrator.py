@@ -1,5 +1,5 @@
 import torch, time, numpy as np
-from datasets import OfflineRLDataCollection, SequenceDataLoader
+from datasets import OfflineRLDataCollection, SequenceDataCollection
 from agents import MultinomialActionQLAgent
 
 class Orchestrator:
@@ -9,18 +9,16 @@ class Orchestrator:
         data_config,
         num_epochs=None,
         env_config=None,
-        total_steps=None,
         warmstart_steps=None,
     ):
         self.agent = agent
         self.data_config = data_config
         self.num_epochs = num_epochs
-        self.total_steps = total_steps
         self.warmstart_steps = warmstart_steps
+        self.num_steps_per_epoch = getattr(data_config, 'NUM_STEPS_PER_EPOCH', None)
 
         if data_config.RL_MODE == "ONLINE":
-            self.data_collection = SequenceDataLoader(data_config)
-            self.dataset = self.data_collection.dataset
+            self.data_collection = SequenceDataCollection(data_config)
             self.envs = env_config.spawn()
         else:
             self.data_collection = OfflineRLDataCollection(data_config)
@@ -83,38 +81,56 @@ class Orchestrator:
 
     def start_online(self):
         obs, _ = self.envs.reset()
-        dataset = self.dataset
         start_time = time.time()
-        print('-'*10 + 'starting online training' + '-'*10)
+        print('-'*10 + 'starting online RL training' + '-'*10)
 
-        for step in range(self.total_steps):
-            if step < self.warmstart_steps:
-                actions = self.envs.action_space.sample()
-            else:
-                actions = self.agent.sample_action(obs)
+        global_step = 0
+        for epoch in range(self.num_epochs):
+            for step in range(self.num_steps_per_epoch):
+                if global_step < self.warmstart_steps:
+                    actions = self.envs.action_space.sample()
+                else:
+                    actions = self.agent.sample_action(obs)
 
-            next_obs, rewards, terminations, truncations, infos = self.envs.step(actions)
-            dones = np.logical_or(terminations, truncations)
+                # envs.step expects numpy arrays on CPU
+                if torch.is_tensor(actions):
+                    actions = actions.cpu().numpy()
 
-            # Use true terminal obs for buffer, not the auto-reset obs
-            buffer_obs = next_obs
-            if "final_obs" in infos:
-                buffer_obs = np.where(
-                    dones[:, None], np.stack(infos["final_obs"]), next_obs
-                )
+                next_obs, rewards, terminations, truncations, infos = self.envs.step(actions)
+                dones = np.logical_or(terminations, truncations)
 
-            dataset.add_transition(obs, actions, rewards, buffer_obs, dones)
-            obs = next_obs
+                # Use true terminal obs for buffer, not the auto-reset obs
+                buffer_obs = next_obs
+                if "final_obs" in infos:
+                    buffer_obs = np.where(
+                        dones[:, None], np.stack(infos["final_obs"]), next_obs
+                    )
 
-            if step >= self.warmstart_steps and len(dataset) > 0:
-                batch = self.data_collection.sample_batch()
-                self.agent.update(*batch)
+                self.data_collection.dataset.add_transition(obs, actions, rewards, buffer_obs, dones)
+                obs = next_obs
 
-            if step % 500 == 0:
-                elapsed = time.time() - start_time
-                print(f"Step {step}/{self.total_steps}, "
-                      f"sequences={len(dataset)}, "
-                      f"time={elapsed/60:.1f}min")
+                # Create train_loader once we have enough samples
+                if self.data_collection.data_loader is None \
+                        and len(self.data_collection.dataset) >= self.data_collection.batch_size:
+                    self.data_collection.create_train_loader()
+
+                if global_step >= self.warmstart_steps and self.data_collection.data_loader is not None:
+                    batch = self.data_collection.sample_batch()
+                    # Flatten (batch, seq_len, num_tasks, feat_dim) → (N, feat_dim)
+                    # e.g. states: (32,1,10,59)→(320,59), rewards: (32,1,10)→(320,)
+                    batch = tuple(
+                        b.reshape(-1, *b.shape[3:]) if b.dim() > 2 else b.reshape(-1)
+                        for b in batch
+                    )
+                    self.agent.update(*batch)
+
+                global_step += 1
+
+            elapsed = time.time() - start_time
+            print(f"Epoch {epoch+1}/{self.num_epochs}, "
+                  f"global_step={global_step}, "
+                  f"sequences={len(self.data_collection.dataset)}, "
+                  f"time={elapsed/60:.1f}min")
 
         self.envs.close()
         print(f"Online training complete in {(time.time()-start_time)/60:.1f}min")

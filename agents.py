@@ -7,7 +7,7 @@ import torch.optim as optim
 import os
 import time
 from typing import Dict, Tuple
-from models import BinaryActionQNetwork, MultinomialActionQNetwork
+from models import BinaryActionQNetwork, MultinomialActionQNetwork, ConcatQNetwork
 
 
 # ============================================================================
@@ -41,19 +41,11 @@ class Agent(ABC):
 #   _make_network(state_dim) -> nn.Module
 #   _transform_actions(actions) -> Tensor (dataset actions → network format)
 #   select_actions(states) -> Tensor
-#   compute_cql_loss(states, actions, q_network) -> Tensor
-#
-# DiscreteQLAgent adds discrete-specific hooks and provides
-# select_actions / compute_cql_loss via exhaustive enumeration:
-#   _num_actions() -> int
-#   _all_action_tensors(batch_size) -> Tensor
-#   _indices_to_actions(indices) -> Tensor
-#
-# Future: ContinuousQLAgent would override select_actions with sampling
 #
 # ============================================================================
 
 class BaseQLAgent(Agent):
+    # [extension todo: have abstraction on the critic model architecture from BaseQLAgent]
     """
     Shared base for Q-learning agents with double Q-networks.
     Handles: __init__, update, _update_single_q, _soft_update_targets, save, load, train.
@@ -130,22 +122,6 @@ class BaseQLAgent(Agent):
 
         Discrete agents: exhaustive enumeration over all actions
         Continuous agents: sampling-based (e.g. random shooting, CEM)
-        """
-        ...
-
-    @abstractmethod
-    def compute_cql_loss(
-        self,
-        states: torch.Tensor,
-        actions: torch.Tensor,
-        q_network: nn.Module
-    ) -> torch.Tensor:
-        """
-        Compute CQL conservative penalty for a single Q-network.
-        CQL penalty = E_s[ logsumexp_a Q(s,a) ] - E_s[ Q(s, a_data) ]
-
-        Discrete agents: exact logsumexp over all actions
-        Continuous agents: sampled approximation
         """
         ...
 
@@ -349,6 +325,16 @@ class BaseQLAgent(Agent):
 # ============================================================================
 # Discrete Q-Learning Agent (intermediate base for finite action spaces)
 # ============================================================================
+#
+# DiscreteQLAgent adds discrete-specific hooks and provides
+# select_actions by evaluating Q for all actions: 
+#   _num_actions() -> int
+#   _all_action_tensors(batch_size) -> Tensor
+#   _indices_to_actions(indices) -> Tensor
+#
+# Future: ContinuousQLAgent would override select_actions with sampling
+#
+# ============================================================================
 
 class DiscreteQLAgent(BaseQLAgent):
     """
@@ -448,7 +434,7 @@ class BinaryActionQLAgent(DiscreteQLAgent):
         actions_0 = torch.zeros(batch_size, 1, device=self.device)
         actions_1 = torch.ones(batch_size, 1, device=self.device)
         return torch.cat([actions_0, actions_1], dim=0)
-
+    
     def _transform_actions(self, actions: torch.Tensor) -> torch.Tensor:
         # Dataset gives float 0.0/1.0, network expects [batch_size, 1]
         return actions.unsqueeze(1) if actions.dim() == 1 else actions
@@ -518,9 +504,174 @@ class MultinomialActionQLAgent(DiscreteQLAgent):
         return a1_idx * self.a2_bins + a2_bin
 
     def discrete_to_continuous_action(self, action_idx: int) -> np.ndarray:
-        # [note] helper function, not used 
+        # [note] helper function, not used
         """Convert discrete action index → [a1, a2]."""
         a1_idx = action_idx // self.a2_bins
         a2_bin = action_idx % self.a2_bins
         a2_value = (self.a2_bin_edges[a2_bin] + self.a2_bin_edges[a2_bin + 1]) / 2
         return np.array([float(a1_idx), a2_value])
+
+# ============================================================================
+# SAC Agent (Soft Actor-Critic for continuous action spaces)
+# ============================================================================
+
+class SACAgent(BaseQLAgent):
+    """
+    Soft Actor-Critic agent for continuous action spaces.
+    Adds actor (policy) network and learnable temperature on top of BaseQLAgent.
+    Overrides update() with actor-critic-alpha three-step optimization.
+
+    Handling task IDs:
+    - Task IDs are NOT stored as a separate field. They are embedded in the
+      observation as a one-hot vector (last num_tasks dims) by the vectorized
+      env when use_one_hot=True.
+    - In start_online(), the env returns obs of shape (num_envs, obs_dim) where
+      each env's obs already contains its one-hot task encoding. This flows
+      through add_transition -> _store_window -> DataLoader -> update()
+      automatically.
+    - When batches are flattened from (batch, 1, num_tasks, obs_dim) to
+      (N, obs_dim), the one-hot task encoding is preserved in each row.
+    - To extract task IDs at any point (e.g. for per-task evaluation or
+      mixture-of-experts routing like Moore): task_ids = obs[..., -num_tasks:]
+    - This matches the reference (metaworld-algorithms mtsac.py:455):
+      task_ids = data.observations[..., -self.num_tasks:]
+    """
+
+    def __init__(self, state_dim, action_dim, hidden_dim=400, depth=3, **kwargs):
+        self.action_dim = action_dim
+        self.hidden_dim = hidden_dim
+        self.depth = depth
+        super().__init__(state_dim, **kwargs)
+
+        self.actor = self._make_actor(state_dim, action_dim).to(self.device)
+        self.actor_optimizer = optim.Adam(self.actor.parameters(), lr=kwargs.get('lr', 3e-3))
+
+        # Learnable temperature
+        self.log_alpha = torch.zeros(1, requires_grad=True, device=self.device)
+        self.alpha_optimizer = optim.Adam([self.log_alpha], lr=kwargs.get('lr', 3e-3))
+        self.target_entropy = -action_dim
+
+        # Critic list for looping
+        self.critics = [self.q1, self.q2]
+        self.critic_targets = [self.q1_target, self.q2_target]
+        self.critic_optimizers = [self.q1_optimizer, self.q2_optimizer]
+
+    def _make_actor(self, state_dim, action_dim) -> nn.Module:
+        """Return a policy network. Override for custom architectures."""
+        layers = []
+        in_dim = state_dim
+        for _ in range(self.depth):
+            layers += [nn.Linear(in_dim, self.hidden_dim), nn.ReLU()]
+            in_dim = self.hidden_dim
+        layers.append(nn.Linear(self.hidden_dim, action_dim * 2))
+        return nn.Sequential(*layers)
+
+    def _make_network(self, state_dim) -> nn.Module:
+        """Q-network for continuous actions: takes (state, action) as two args."""
+        return ConcatQNetwork(state_dim, self.action_dim, self.hidden_dim, self.depth)
+
+    def _transform_actions(self, actions):
+        return actions
+
+    def _get_action_dist(self, states):
+        output = self.actor(states)
+        mean, log_std = output.chunk(2, dim=-1)
+        log_std = log_std.clamp(-20, 2)
+        return mean, log_std.exp()
+
+    def select_actions(self, states):
+        """Sample actions from policy. Returns (actions, log_probs)."""
+        mean, std = self._get_action_dist(states)
+        dist = torch.distributions.Normal(mean, std)
+        raw = dist.rsample()
+        actions = torch.tanh(raw)
+        log_probs = dist.log_prob(raw) - torch.log(1 - actions.pow(2) + 1e-6)
+        log_probs = log_probs.sum(dim=-1, keepdim=True)
+        return actions, log_probs
+
+    def sample_action(self, states):
+        """For env interaction — no grad, tensor out."""
+        with torch.no_grad():
+            states = torch.FloatTensor(states).to(self.device)
+            actions, _ = self.select_actions(states)
+        return actions
+
+    # ------------------------------------------------------------------
+    # Critic helpers
+    # ------------------------------------------------------------------
+
+    def compute_target_q(self, next_states, next_actions, rewards, dones, alpha, next_log_probs):
+        with torch.no_grad():
+            target_qs = [t(next_states, next_actions) for t in self.critic_targets]
+            min_q = torch.min(torch.stack(target_qs), dim=0).values.squeeze(-1)
+            next_log_probs = next_log_probs.squeeze(-1)
+            return rewards + self.gamma * (1 - dones) * (min_q - alpha * next_log_probs)
+
+    def critic_loss(self, states, actions, target_q):
+        return [F.mse_loss(q(states, actions).squeeze(-1), target_q) for q in self.critics]
+
+    def critic_step(self, losses):
+        for opt, loss in zip(self.critic_optimizers, losses):
+            opt.zero_grad()
+            loss.backward()
+            opt.step()
+
+    # ------------------------------------------------------------------
+    # update() — overrides BaseQLAgent
+    # ------------------------------------------------------------------
+
+    def update(self, states, actions, rewards, next_states, dones):
+        states = torch.FloatTensor(states).to(self.device)
+        actions = torch.FloatTensor(actions).to(self.device)
+        rewards = torch.FloatTensor(rewards).to(self.device)
+        next_states = torch.FloatTensor(next_states).to(self.device)
+        dones = torch.FloatTensor(dones).to(self.device)
+
+        sac_alpha = self.log_alpha.exp().detach()
+
+        # --- 1. Critic update ---
+        with torch.no_grad():
+            next_actions, next_log_probs = self.select_actions(next_states)
+        target_q = self.compute_target_q(next_states, next_actions, rewards, dones, sac_alpha, next_log_probs)
+        losses = self.critic_loss(states, actions, target_q)
+        self.critic_step(losses)
+
+        # --- 2. Actor update ---
+        actions_pred, log_probs = self.select_actions(states)
+        q_vals = [q(states, actions_pred) for q in self.critics]
+        min_q = torch.min(torch.stack(q_vals), dim=0).values
+        actor_loss = (sac_alpha * log_probs - min_q).mean()
+
+        self.actor_optimizer.zero_grad()
+        actor_loss.backward()
+        actor_grad_norm = torch.nn.utils.clip_grad_norm_(self.actor.parameters(), float('inf'))
+        self.actor_optimizer.step()
+
+        # --- 3. Alpha (temperature) update ---
+        alpha_loss = (-self.log_alpha * (log_probs.detach() + self.target_entropy)).mean()
+
+        self.alpha_optimizer.zero_grad()
+        alpha_loss.backward()
+        self.alpha_optimizer.step()
+
+        # --- 4. Soft update targets ---
+        self._soft_update_targets()
+
+        self.training_step += 1
+
+        # --- Logging ---
+        actor_param_norm = torch.cat([p.view(-1) for p in self.actor.parameters()]).norm()
+        critic_param_norm = torch.cat([
+            p.view(-1) for q in self.critics for p in q.parameters()
+        ]).norm()
+
+        return {
+            'q1_loss': losses[0].item(),
+            'q2_loss': losses[1].item(),
+            'actor_loss': actor_loss.item(),
+            'alpha_loss': alpha_loss.item(),
+            'sac_alpha': sac_alpha.item(),
+            'actor_grad_norm': actor_grad_norm.item(),
+            'actor_param_norm': actor_param_norm.item(),
+            'critic_param_norm': critic_param_norm.item(),
+        }
