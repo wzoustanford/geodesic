@@ -1,6 +1,7 @@
-import torch 
+import torch, copy
 from torch.utils.data import Dataset, DataLoader
 from typing import Tuple, List, Dict
+from collections import deque
 import numpy as np, pandas as pd
 from sklearn.preprocessing import StandardScaler
 from projects.vaso.utils import compute_vaso_clinician_rewards
@@ -18,14 +19,14 @@ RL Dataset design principles:
 - Goal was not super encapsulated/oop, but get to efficient v1 by realizing above goals 
 """
 
-class RLDataset(Dataset):
-    def __init__(self, data): 
-        self.data = data 
+class TransitionDataset(Dataset):
+    def __init__(self, data):
+        self.data = data
 
     def __len__(self):
         return len(self.data['states'])
-    
-    def __getitem__(self, idx): 
+
+    def __getitem__(self, idx):
         return (
             self.data['states'][idx],
             self.data['actions'][idx],
@@ -37,12 +38,133 @@ class RLDataset(Dataset):
             self.data['state_features'],
         )
 
-class RLDataCollection:
-    def __init__(self, data_config, reward_model=None):
+class SequenceDataset(Dataset):
+    def __init__(self, seq_len, stride=None, capacity=None):
+        self.seq_len = seq_len
+        self.stride = stride or seq_len
+        self._buf_s, self._buf_a, self._buf_r = [], [], []
+        self._buf_ns, self._buf_d = [], []
+        self.states = deque(maxlen=capacity)
+        self.actions = deque(maxlen=capacity)
+        self.rewards = deque(maxlen=capacity)
+        self.next_states = deque(maxlen=capacity)
+        self.dones = deque(maxlen=capacity)
+
+    def add_transition(self, state, action, reward, next_state, done):
+        self._buf_s.append(np.asarray(state, dtype=np.float32))
+        self._buf_a.append(np.asarray(action, dtype=np.float32))
+        self._buf_r.append(np.asarray(reward, dtype=np.float32))
+        self._buf_ns.append(np.asarray(next_state, dtype=np.float32))
+        self._buf_d.append(np.asarray(done, dtype=np.float32))
+        if len(self._buf_s) >= self.seq_len:
+            if (len(self._buf_s) - self.seq_len) % self.stride == 0:
+                self._store_window(len(self._buf_s) - self.seq_len)
+
+    def _store_window(self, start):
+        end = start + self.seq_len
+        self.states.append(np.stack(self._buf_s[start:end]))
+        self.actions.append(np.stack(self._buf_a[start:end]))
+        self.rewards.append(np.array(self._buf_r[start:end]))
+        self.next_states.append(np.stack(self._buf_ns[start:end]))
+        self.dones.append(np.array(self._buf_d[start:end]))
+
+    def _clear_active(self):
+        self._buf_s, self._buf_a, self._buf_r = [], [], []
+        self._buf_ns, self._buf_d = [], []
+
+    def __len__(self):
+        return len(self.states)
+
+    def __getitem__(self, idx):
+        return (
+            self.states[idx],
+            self.actions[idx],
+            self.rewards[idx],
+            self.next_states[idx],
+            self.dones[idx],
+        )
+
+class PrioritySampler(torch.utils.data.Sampler):
+    """Implements a sum-tree algorithm for prioritized experience replay."""
+    # [note: to re-check and test thoroughly, AI implementation placeholder only]
+    def __init__(self, capacity, alpha=0.6, beta=0.4, epsilon=1e-6):
+        self.capacity = capacity
+        self.alpha = alpha
+        self.beta = beta
+        self.epsilon = epsilon
+        self.priorities = np.ones(capacity, dtype=np.float32)
+        self.size = 0
+        self.max_priority = 1.0
+
+    # [note: to re-check and test thoroughly, AI implementation placeholder only]
+    def __iter__(self):
+        probs = self.priorities[:self.size] ** self.alpha
+        probs /= probs.sum()
+        indices = np.random.choice(self.size, size=self.size, p=probs, replace=True)
+        return iter(indices.tolist())
+
+    def __len__(self):
+        return self.size
+
+    # [note: to re-check and test thoroughly, AI implementation placeholder only]
+    def update(self, indices, priorities):
+        for idx, p in zip(indices, priorities):
+            self.priorities[idx] = abs(p) + self.epsilon
+        self.max_priority = max(self.max_priority, self.priorities[:self.size].max())
+
+    # [note: to re-check and test thoroughly, AI implementation placeholder only]
+    def weights(self, indices):
+        probs = self.priorities[indices] ** self.alpha
+        probs /= (self.priorities[:self.size] ** self.alpha).sum()
+        w = (self.size * probs) ** (-self.beta)
+        return w / w.max()
+
+    # [note: to re-check and test thoroughly, AI implementation placeholder only]
+    def add(self, count=1):
+        for _ in range(count):
+            if self.size < self.capacity:
+                self.priorities[self.size] = self.max_priority
+                self.size += 1
+
+class SequenceDataLoader:
+    def __init__(self, data_config):
+        self.dataset = SequenceDataset(
+            seq_len=data_config.SEQ_LEN,
+            stride=data_config.STRIDE,
+            capacity=data_config.BUFFER_CAPACITY,
+        )
+        self.train_loader = DataLoader(
+            self.dataset,
+            batch_size=data_config.TRAIN_BATCH_SIZE,
+            shuffle=True,
+        )
+        self._iter = None
+
+    def sample_batch(self):
+        # Note on deque eviction and iterator staleness:
+        # SequenceDataset stores data in deque(maxlen=capacity). The DataLoader
+        # iterator snapshots len(dataset) at creation and builds a shuffled index
+        # permutation. If items are evicted from the deque between next() calls:
+        #   1. deque has [A, B, C, D, E] (indices 0-4)
+        #   2. iter(loader) shuffles indices [0,1,2,3,4] -> e.g. [3,1,4,0,2]
+        #   3. next() -> dataset[3] -> returns D
+        #   4. deque full, new item added -> A popped, F appended -> [B,C,D,E,F]
+        #   5. next() -> dataset[1] -> returns C (was B before pop, indices shifted)
+        # This means some items may be skipped or sampled twice. For RL replay
+        # buffers this bias is negligible since the buffer changes slowly relative
+        # to iteration speed. The iterator is refreshed when exhausted.
+        try:
+            return next(self._iter)
+        except (StopIteration, TypeError):
+            self._iter = iter(self.train_loader)
+            return next(self._iter)
+
+class OfflineRLDataCollection:
+    def __init__(self, data_config, reward_model=None): 
         # data config: configuration file for data 
         # from_csv_file: the csv file containing offline RL data 
         # reward_source: for IRL research, which rewards source, manual defined or learned reward model 
-
+        
         self.data_config = data_config #pandas dataframe 
 
         if reward_model is None: 
@@ -56,26 +178,31 @@ class RLDataCollection:
 
         rewards = None # to implement for cases where offline RL data includes rewards 
 
-        # [extention]: distributed data ETL pre-processing using pyspark and pandas 
-        train_data, val_data, test_data = self.prepare_data() 
-        
-        #states, actions = self.normalize_process_features(data) # [extension]: implement this later for normalization and one hot features for category features 
-        train_dataset = RLDataset(train_data) 
-        val_dataset = RLDataset(val_data)
-        test_dataset = RLDataset(test_data)
+        online = True if hasattr(data_config, "RL_MODE") and data_config.RL_MODE == "ONLINE" else False 
 
-        self.train_loader = DataLoader(train_dataset, batch_size=data_config.TRAIN_BATCH_SIZE, shuffle=data_config.SHUFFLE)
-        self.val_loader = DataLoader(val_dataset, batch_size=data_config.VAL_BATCH_SIZE, shuffle=True)
-        self.test_loader = DataLoader(test_dataset, batch_size=data_config.TEST_BATCH_SIZE, shuffle=True)
-        
-        # [online RL]: append to the lists as agent explores the environment 
+        if online: 
+            # [online RL]: append to the lists as agent explores the environment 
+            self.online_data = self.create_empty_dataset(data_config.STATE_COLUMNS)
+            self.online_reply_buffer = None 
+        else: 
+            # [extention]: distributed data ETL pre-processing using pyspark and pandas 
+            train_data, val_data, test_data = self.prepare_offline_data() 
+            
+            #states, actions = self.normalize_process_features(data) # [extension]: implement this later for normalization and one hot features for category features 
+            train_dataset = TransitionDataset(train_data) 
+            val_dataset = TransitionDataset(val_data)
+            test_dataset = TransitionDataset(test_data)
+
+            self.train_loader = DataLoader(train_dataset, batch_size=data_config.TRAIN_BATCH_SIZE, shuffle=data_config.SHUFFLE)
+            self.val_loader = DataLoader(val_dataset, batch_size=data_config.VAL_BATCH_SIZE, shuffle=True)
+            self.test_loader = DataLoader(test_dataset, batch_size=data_config.TEST_BATCH_SIZE, shuffle=True)
     
     def get_traj_ids(self, data) -> np.ndarray:
-        """Get all unique patient IDs"""
+        """Get all unique trajectory IDs"""
         return data[self.data_config.TRAJ_ID_COL].unique()
 
     def get_traj_data(self, traj_id: int, data, data_config) -> pd.DataFrame:
-        """Get data for a specific patient"""
+        """Get data for a specific trajectory"""
         if data is None:
             raise ValueError("Data not loaded. Call load_data() first.")
         return data[data[data_config.TRAJ_ID_COL] == traj_id].copy()
@@ -95,14 +222,45 @@ class RLDataCollection:
         data = pd.read_csv(filepath)
         
         print(f"Loaded {len(data)} records")
-        print(f"Number of patients: {data[self.data_config.TRAJ_ID_COL].nunique()}")
+        print(f"Number of trajectorys: {data[self.data_config.TRAJ_ID_COL].nunique()}")
         print(f"Columns found: {len(data.columns)} columns")
         
-        # Sort by patient and time
+        # Sort by trajectory and time
         data = data.sort_values([self.data_config.TRAJ_ID_COL, self.data_config.TIME_COL])
         return data 
     
-    def prepare_data(self):
+    def create_loader_for_online_replay_buffer(self): 
+        self.online_data_copy = copy.deepcopy(self.online_data)
+        self.online_replay_buffer = DataLoader(TransitionDataset(self.online_data_copy), batch_size = self.data_config.TRAIN_BATCH_SIZE, shuffle=False)
+    
+    def create_empty_dataset(self, state_features: list) -> Dict:
+        """Create an empty replay buffer dict matching the TransitionDataset schema."""
+        return {
+            'states': np.empty((0, len(state_features)), dtype=np.float32),
+            'actions': np.empty((0, 1), dtype=np.float32),
+            'rewards': np.empty((0,), dtype=np.float32),
+            'next_states': np.empty((0, len(state_features)), dtype=np.float32),
+            'dones': np.empty((0,), dtype=np.float32),
+            'n_transitions': 0,
+            'n_trajs': 0,
+            'state_features': state_features,
+        }
+
+    def add_transition(self, state, action, reward: float, next_state, done: float) -> Dict:
+        """Append a single (s, a, r, s', done) transition to an existing dataset dict."""
+        state = np.array(state, dtype=np.float32).reshape(1, -1)
+        next_state = np.array(next_state, dtype=np.float32).reshape(1, -1)
+        action = np.array(action, dtype=np.float32).reshape(1, -1)
+
+        self.online_data['states'] = np.concatenate([self.online_data['states'], state], axis=0)
+        self.online_data['actions'] = np.concatenate([self.online_data['actions'], action], axis=0)
+        self.online_data['rewards'] = np.append(self.online_data['rewards'], reward)
+        self.online_data['next_states'] = np.concatenate([self.online_data['next_states'], next_state], axis=0)
+        self.online_data['dones'] = np.append(self.online_data['dones'], done)
+        self.online_data['n_transitions'] = len(self.online_data['states'])
+    
+
+    def prepare_offline_data(self): 
         """
         Complete data preparation pipeline producing (s, a, r, s', done) tuples.
         Uses learned rewards if reward_source='learned' and a model is loaded.
@@ -129,11 +287,11 @@ class RLDataCollection:
 
         if self.data_config.DUAL_DATASET_MODE:
             # DUAL-DATASET MODE
-            # Load training data (use all patients)
+            # Load training data (use all trajectorys)
             print("1. Loading training data...")
             data = self.load_offline_trajectorys_from_file(self.data_config.COMBINED_OR_TRAIN_DATA_PATH) 
             train_traj_ids = self.get_traj_ids(data)
-            print(f"   Train: {len(train_traj_ids)} patients (all from {self.data_config.COMBINED_OR_TRAIN_DATA_PATH})")
+            print(f"   Train: {len(train_traj_ids)} trajectorys (all from {self.data_config.COMBINED_OR_TRAIN_DATA_PATH})")
 
             # Load evaluation data (split into val/test)
             print("2. Loading evaluation data...")
@@ -148,8 +306,8 @@ class RLDataCollection:
                 test_ratio=0.5
             )[1:]  # Skip empty train split
 
-            print(f"   Val:   {len(val_traj_ids)} patients (from {self.data_config.EVAL_DATA_PATH})")
-            print(f"   Test:  {len(test_traj_ids)} patients (from {self.data_config.EVAL_DATA_PATH})")
+            print(f"   Val:   {len(val_traj_ids)} trajectorys (from {self.data_config.EVAL_DATA_PATH})")
+            print(f"   Test:  {len(test_traj_ids)} trajectorys (from {self.data_config.EVAL_DATA_PATH})")
 
             # Encode categorical features for both loaders
             print("3. Encoding categorical features...")
@@ -168,9 +326,9 @@ class RLDataCollection:
             traj_ids = self.get_traj_ids(data)
             train_traj_ids, val_traj_ids, test_traj_ids = self.split_data(traj_ids, self.data_config.TRAIN_RATIO, self.data_config.VAL_RATIO, self.data_config.TEST_RATIO)
 
-            print(f"   Train: {len(train_traj_ids)} patients")
-            print(f"   Val:   {len(val_traj_ids)} patients")
-            print(f"   Test:  {len(test_traj_ids)} patients")
+            print(f"   Train: {len(train_traj_ids)} trajectorys")
+            print(f"   Val:   {len(val_traj_ids)} trajectorys")
+            print(f"   Test:  {len(test_traj_ids)} trajectorys")
 
             # Encode categorical features
             print("2. Encoding categorical features...")
@@ -192,21 +350,21 @@ class RLDataCollection:
 
         return train_data, val_data, test_data
 
-    def split_data(self, patient_ids: np.ndarray,
+    def split_data(self, trajectory_ids: np.ndarray,
                       train_ratio: float,
                       val_ratio: float,
                       test_ratio: float) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
         """
-        Split patient IDs into train/val/test sets
+        Split trajectory IDs into train/val/test sets
 
         Args:
-            patient_ids: Array of all patient IDs
+            trajectory_ids: Array of all trajectory IDs
             train_ratio: Proportion for training (default 0.70)
             val_ratio: Proportion for validation (default 0.15)
             test_ratio: Proportion for testing (default 0.15)
 
         Returns:
-            Tuple of (train_patients, val_patients, test_patients)
+            Tuple of (train_trajectorys, val_trajectorys, test_trajectorys)
         """
         assert abs(train_ratio + val_ratio + test_ratio - 1.0) < 1e-6, \
             "Ratios must sum to 1.0"
@@ -217,17 +375,17 @@ class RLDataCollection:
             # Split directly into val and test
             # test_ratio / (val_ratio + test_ratio) gives relative test size
             relative_test_size = test_ratio / (val_ratio + test_ratio)
-            val_patients, test_patients = train_test_split(
-                patient_ids,
+            val_trajectorys, test_trajectorys = train_test_split(
+                trajectory_ids,
                 test_size=relative_test_size,
                 random_state=self.random_seed
             )
-            train_patients = np.array([])  # Empty train set
+            train_trajectorys = np.array([])  # Empty train set
         else:
             # Standard two-step split
             # First split: train+val vs test
-            train_val_patients, test_patients = train_test_split(
-                patient_ids,
+            train_val_trajectorys, test_trajectorys = train_test_split(
+                trajectory_ids,
                 test_size=test_ratio,
                 random_state=self.random_seed
             )
@@ -236,17 +394,17 @@ class RLDataCollection:
             # Calculate validation size relative to train+val
             val_size_relative = val_ratio / (train_ratio + val_ratio)
 
-            train_patients, val_patients = train_test_split(
-                train_val_patients,
+            train_trajectorys, val_trajectorys = train_test_split(
+                train_val_trajectorys,
                 test_size=val_size_relative,
                 random_state=self.random_seed
             )
 
-        self.train_patients = train_patients
-        self.val_patients = val_patients
-        self.test_patients = test_patients
+        self.train_trajectorys = train_trajectorys
+        self.val_trajectorys = val_trajectorys
+        self.test_trajectorys = test_trajectorys
 
-        return train_patients, val_patients, test_patients
+        return train_trajectorys, val_trajectorys, test_trajectorys
 
     def _build_buffer_from_split(self, traj_list: np.ndarray, state_features: list, split_name: str, data) -> Dict: 
         """
@@ -254,10 +412,10 @@ class RLDataCollection:
         Initial rewards are set to 0 if using learned rewards (recomputed later).
         
         Args:
-            patient_list: Array of patient IDs to process
+            trajectory_list: Array of trajectory IDs to process
             state_features: List of state feature column names
             split_name: Name of split ('train', 'val', or 'test')
-            loader: DataLoader instance to use for getting patient data
+            loader: DataLoader instance to use for getting trajectory data
         """
 
         all_states = []
@@ -265,9 +423,9 @@ class RLDataCollection:
         all_rewards = []
         all_next_states = []
         all_dones = []
-        all_patient_ids = []
+        all_trajectory_ids = []
         
-        # Group transitions by patient for patient-aware batching
+        # Group transitions by trajectory for trajectory-aware batching
         current_idx = 0
 
         for traj_id in traj_list:
@@ -281,10 +439,10 @@ class RLDataCollection:
 
             actions = traj[self.data_config.ACTION_COLUMNS].values
 
-            # Get patient mortality outcome (for manual reward if needed)
+            # Get trajectory outcome (for manual reward if needed)
             mortality = int(traj[self.data_config.DEATH_COL].iloc[-1])
 
-            # Store starting index for this patient
+            # Store starting index for this trajectory
             traj_start_idx = current_idx
 
             # Create transitions
@@ -324,7 +482,7 @@ class RLDataCollection:
 
                 all_rewards.append(reward)
 
-                all_patient_ids.append(traj_id)
+                all_trajectory_ids.append(traj_id)
                 current_idx += 1
 
         # Convert to arrays 
@@ -334,7 +492,7 @@ class RLDataCollection:
         all_actions = np.array(all_actions, dtype=np.float32)
         all_rewards = np.array(all_rewards, dtype=np.float32)
         all_dones = np.array(all_dones, dtype=np.float32)
-        all_patient_ids = np.array(all_patient_ids)
+        all_trajectory_ids = np.array(all_trajectory_ids)
 
         # Normalize states (fit scaler on train only)
         if split_name == 'train':

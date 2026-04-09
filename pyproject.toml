@@ -1,0 +1,22 @@
+[project]
+name = "geodesic"
+version = "0.1.0"
+description = "General-purpose reinforcement learning platform"
+requires-python = ">=3.12"
+
+dependencies = [
+    "torch>=2.10.0",
+    "torchvision>=0.25.0",
+    "numpy>=2.4.0",
+    "pandas>=3.0.0",
+    "scikit-learn>=1.8.0",
+    "gymnasium>=1.1.1",
+    "metaworld @ git+https://github.com/reginald-mclean/Metaworld.git@same-step-autoreset",
+]
+
+[tool.setuptools]
+py-modules = ["datasets", "orchestrator", "agents", "environments"]
+
+[build-system]
+requires = ["setuptools>=75.0"]
+build-backend = "setuptools.build_meta"
