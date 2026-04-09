@@ -32,6 +32,15 @@ the data will be offline trajetories already collected, and will be split into t
 
 python -m tests.ut_offline_rl 
 
+## Algorithms 
+- DQN (Q-learning)
+- SAC (Soft Actor Critic)
+
+## Action spaces  
+- Binary (QL)
+- Discrete/multinomial (QL)
+- Continous (SAC) 
+
 ## RLDataset Schema 
 
 | Field | Type | Shape | Description |
@@ -46,3 +55,7 @@ python -m tests.ut_offline_rl
 | `state_features` | `list[str]` | `(S,)` | Ordered list of feature names corresponding to state dimensions |
 
 > **Shape key:** `N` = number of transitions, `S` = state dimension, `A` = action dimension.
+
+## Contributions
+We are looking for core developers, reachout to will@angle.ac, jennifer@angle.ac 
+
