@@ -1,9 +1,9 @@
-from datasets import RLDataCollection 
+from datasets import OfflineRLDataCollection 
 import configs.vaso_dual_action_data_config as data_config 
 
 def ut1_dataset():
     print(data_config)
-    DC = RLDataCollection(data_config)
+    DC = OfflineRLDataCollection(data_config)
     for batch_idx, features in enumerate(DC.train_loader):
         print(batch_idx)
         print(features)

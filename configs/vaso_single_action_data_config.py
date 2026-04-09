@@ -2,6 +2,8 @@
 Configuration file for data processing and feature definitions
 """
 
+RL_MODE = "OFFLINE"
+
 # ==================== Feature Definitions ====================
 
 # state columns 

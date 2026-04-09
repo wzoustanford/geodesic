@@ -1,13 +1,29 @@
-import torch, time
-from datasets import RLDataCollection
+import torch, time, numpy as np
+from datasets import OfflineRLDataCollection, SequenceDataLoader
 from agents import MultinomialActionQLAgent
 
 class Orchestrator:
-    def __init__(self, agent , num_epochs, data_config):
-        self.data_collection = RLDataCollection(data_config)
+    def __init__(
+        self,
+        agent,
+        data_config,
+        num_epochs=None,
+        env_config=None,
+        total_steps=None,
+        warmstart_steps=None,
+    ):
         self.agent = agent
-        
+        self.data_config = data_config
         self.num_epochs = num_epochs
+        self.total_steps = total_steps
+        self.warmstart_steps = warmstart_steps
+
+        if data_config.RL_MODE == "ONLINE":
+            self.data_collection = SequenceDataLoader(data_config)
+            self.dataset = self.data_collection.dataset
+            self.envs = env_config.spawn()
+        else:
+            self.data_collection = OfflineRLDataCollection(data_config)
     
     def start(self): 
         # ------------------------------------------------------------------
@@ -44,7 +60,7 @@ class Orchestrator:
                 val_batch[0],
                 val_batch[1],
             )
-            print('<'*2 + 'validation loss: {val_loss}' + '<'*2)
+            print('<'*2 + f'validation q: {val_q}' + '<'*2)
             # Log progress 
             if (epoch + 1) % 10 == 0:
                 elapsed = time.time() - start_time
@@ -64,3 +80,41 @@ class Orchestrator:
         print("Models saved:", flush=True)
         print(f"  - {self.agent.get_save_path('best')}", flush=True)
         print(f"  - {self.agent.get_save_path('final')}", flush=True)
+
+    def start_online(self):
+        obs, _ = self.envs.reset()
+        dataset = self.dataset
+        start_time = time.time()
+        print('-'*10 + 'starting online training' + '-'*10)
+
+        for step in range(self.total_steps):
+            if step < self.warmstart_steps:
+                actions = self.envs.action_space.sample()
+            else:
+                actions = self.agent.sample_action(obs)
+
+            next_obs, rewards, terminations, truncations, infos = self.envs.step(actions)
+            dones = np.logical_or(terminations, truncations)
+
+            # Use true terminal obs for buffer, not the auto-reset obs
+            buffer_obs = next_obs
+            if "final_obs" in infos:
+                buffer_obs = np.where(
+                    dones[:, None], np.stack(infos["final_obs"]), next_obs
+                )
+
+            dataset.add_transition(obs, actions, rewards, buffer_obs, dones)
+            obs = next_obs
+
+            if step >= self.warmstart_steps and len(dataset) > 0:
+                batch = self.data_collection.sample_batch()
+                self.agent.update(*batch)
+
+            if step % 500 == 0:
+                elapsed = time.time() - start_time
+                print(f"Step {step}/{self.total_steps}, "
+                      f"sequences={len(dataset)}, "
+                      f"time={elapsed/60:.1f}min")
+
+        self.envs.close()
+        print(f"Online training complete in {(time.time()-start_time)/60:.1f}min")

@@ -1,4 +1,4 @@
-from datasets import RLDataCollection 
+from datasets import OfflineRLDataCollection 
 from agents import MultinomialActionQLAgent
 from orchestrator import Orchestrator
 import configs.vaso_dual_action_data_config as data_config 
