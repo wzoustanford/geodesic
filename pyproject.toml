@@ -12,6 +12,7 @@ dependencies = [
     "scikit-learn>=1.8.0",
     "gymnasium>=1.1.1",
     "metaworld @ git+https://github.com/reginald-mclean/Metaworld.git@same-step-autoreset",
+    "packaging>=24.0",
 ]
 
 [tool.setuptools]

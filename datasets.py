@@ -126,19 +126,26 @@ class PrioritySampler(torch.utils.data.Sampler):
                 self.priorities[self.size] = self.max_priority
                 self.size += 1
 
-class SequenceDataLoader:
+class SequenceDataCollection:
     def __init__(self, data_config):
         self.dataset = SequenceDataset(
             seq_len=data_config.SEQ_LEN,
             stride=data_config.STRIDE,
             capacity=data_config.BUFFER_CAPACITY,
         )
-        self.train_loader = DataLoader(
+        self.batch_size = data_config.TRAIN_BATCH_SIZE
+        self.shuffle = getattr(data_config, 'SHUFFLE', False)
+        self.data_loader = None
+
+    def create_train_loader(self):
+        assert len(self.dataset) >= self.batch_size, \
+            f"Not enough samples ({len(self.dataset)}) for batch_size ({self.batch_size})"
+        self.data_loader = DataLoader(
             self.dataset,
-            batch_size=data_config.TRAIN_BATCH_SIZE,
-            shuffle=True,
+            batch_size=self.batch_size,
+            shuffle=self.shuffle,
         )
-        self._iter = None
+        self._iter = iter(self.data_loader)
 
     def sample_batch(self):
         # Note on deque eviction and iterator staleness:
@@ -153,10 +160,12 @@ class SequenceDataLoader:
         # This means some items may be skipped or sampled twice. For RL replay
         # buffers this bias is negligible since the buffer changes slowly relative
         # to iteration speed. The iterator is refreshed when exhausted.
+        assert self.data_loader is not None, \
+            "Call create_train_loader() before sampling"
         try:
             return next(self._iter)
-        except (StopIteration, TypeError):
-            self._iter = iter(self.train_loader)
+        except StopIteration:
+            self._iter = iter(self.data_loader)
             return next(self._iter)
 
 class OfflineRLDataCollection:

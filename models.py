@@ -84,3 +84,23 @@ class MultinomialActionQNetwork(nn.Module):
         x = F.relu(self.fc2(x))
         x = F.relu(self.fc3(x))
         return self.fc4(x)
+
+
+# ============================================================================
+# Continuous Action Q Model (for SAC)
+# ============================================================================
+
+class ConcatQNetwork(nn.Module):
+    """Q-network that concatenates state and action before the MLP."""
+    def __init__(self, state_dim, action_dim, hidden_dim, depth):
+        super().__init__()
+        layers = []
+        in_dim = state_dim + action_dim
+        for _ in range(depth):
+            layers += [nn.Linear(in_dim, hidden_dim), nn.ReLU()]
+            in_dim = hidden_dim
+        layers.append(nn.Linear(hidden_dim, 1))
+        self.mlp = nn.Sequential(*layers)
+
+    def forward(self, states, actions):
+        return self.mlp(torch.cat([states, actions], dim=-1))
