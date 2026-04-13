@@ -1,6 +1,6 @@
 # pyright: reportAttributeAccessIssue=false, reportIncompatibleMethodOverride=false, reportOptionalMemberAccess=false
 
-## This environment is included to replicate metaworld results. the environment was taken from (https://github.com/rainx0r/metaworld-algorithms) to align experiment results. 
+## This environment is included to replicate metaworld results. the environment was from (https://github.com/rainx0r/metaworld-algorithms). 
 
 from dataclasses import dataclass
 from functools import cached_property

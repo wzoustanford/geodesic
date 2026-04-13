@@ -322,7 +322,7 @@ class OfflineRLDataCollection:
             print("3. Encoding categorical features...")
             train_data = self.encode_categorical_features(train_data)
             eval_data= self.encode_categorical_features(eval_data)
-
+            
             # Process each split
             print("4. Processing transitions...")
             train_data = self._build_buffer_from_split(train_traj_ids, self.data_config.STATE_COLUMNS, 'train', train_data)
