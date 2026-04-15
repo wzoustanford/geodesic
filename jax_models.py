@@ -17,23 +17,6 @@ class Temperature(nn.Module):
         return jnp.exp(self.log_alpha)
 
 
-class MultiTaskTemperature(nn.Module):
-    """Per-task learnable temperature for multi-task SAC."""
-    num_tasks: int
-    initial_temperature: float = 1.0
-
-    def setup(self):
-        self.log_alpha = self.param(
-            "log_alpha",
-            init_fn=lambda _: jnp.full(
-                (self.num_tasks,), jnp.log(self.initial_temperature)
-            ),
-        )
-
-    def __call__(self, task_ids):
-        return jnp.exp(task_ids @ self.log_alpha.reshape(-1, 1))
-
-
 class CriticTrainState(TrainState):
     """TrainState with target network parameters for soft updates."""
     target_params: dict

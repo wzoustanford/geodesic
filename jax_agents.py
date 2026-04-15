@@ -6,20 +6,11 @@ import distrax
 import flax.linen as nn
 from flax.training.train_state import TrainState
 from agents import SACAgent, Agent
-from jax_models import JAXConcatQNetwork, ActorNetwork, Temperature, MultiTaskTemperature, CriticTrainState
+from jax_models import JAXConcatQNetwork, ActorNetwork, Temperature, CriticTrainState
 
 
 ## [proposal] framework design protocal, jax accelerated code can be listed on the top section as pure functions 
 ## class structure is kept at the bottom section, retainin inheritance/abstractions including inheritance from pytorch friendly classes 
-
-def extract_task_weights(alpha_params, task_ids):
-    """Compute per-task loss weights from temperature params."""
-    log_alpha = alpha_params["params"]["log_alpha"]
-    task_weights = jax.nn.softmax(-log_alpha)
-    task_weights = task_ids @ task_weights.reshape(-1, 1)
-    task_weights *= log_alpha.shape[0]
-    return task_weights
-
 
 @jax.jit
 def _select_actions(actor, states, key):
