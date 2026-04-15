@@ -41,6 +41,13 @@ python -m tests.ut_offline_rl
 - Discrete/multinomial (QL)
 - Continous (SAC) 
 
+## JAX 
+- Multi-task RL on metaworld
+- MTSAC 
+
+JAX speed-up 
+![alt text](imgs/metaworld_mt10_jax_vs_pytorch.png)
+
 ## RLDataset Schema 
 
 | Field | Type | Shape | Description |
