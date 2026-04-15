@@ -23,6 +23,31 @@ uv sync
 
 Python 3.12 is required — mujoco and metaworld do not yet have wheels for newer versions. 
 
+## Online RL 
+python -m tests.ut_online_rl_metaworld_mt10
+
+## Offline RL 
+python -m tests.ut_offline_rl 
+
+random sample data: offline_rl_random_sample_data.csv
+works with offline trajetories to be split into train/val/test sets 
+
+## Algorithms 
+- DQN (Q-learning)
+- SAC (Soft Actor Critic)
+
+## Action spaces  
+- Binary (QL)
+- Discrete/multinomial (QL)
+- Continous (SAC) 
+
+## JAX 
+- Multi-task RL on metaworld
+- MTSAC 
+
+JAX speed-up 
+![alt text](imgs/metaworld_mt10_jax_vs_pytorch.png)
+
 ## RLDataset Schema 
 
 | Field | Type | Shape | Description |
@@ -37,3 +62,7 @@ Python 3.12 is required — mujoco and metaworld do not yet have wheels for newe
 | `state_features` | `list[str]` | `(S,)` | Ordered list of feature names corresponding to state dimensions |
 
 > **Shape key:** `N` = number of transitions, `S` = state dimension, `A` = action dimension.
+
+## Contributions
+We are looking for core developers, reachout to will@angle.ac, jennifer@angle.ac 
+
