@@ -24,10 +24,14 @@ uv sync
 Python 3.12 is required — mujoco and metaworld do not yet have wheels for newer versions. 
 
 ## Online RL 
+```bash
 python -m tests.ut_online_rl_metaworld_mt10
+```
 
 ## Offline RL 
+```bash
 python -m tests.ut_offline_rl 
+```
 
 random sample data: offline_rl_random_sample_data.csv
 works with offline trajetories to be split into train/val/test sets 
