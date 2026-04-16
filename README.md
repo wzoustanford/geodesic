@@ -64,5 +64,5 @@ JAX speed-up
 > **Shape key:** `N` = number of transitions, `S` = state dimension, `A` = action dimension.
 
 ## Contributions
-We are looking for core developers, reachout to will@angle.ac, jennifer@angle.ac 
+We are looking for core developers, reachout to will@angle.ac
 
