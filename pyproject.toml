@@ -13,6 +13,10 @@ dependencies = [
     "gymnasium>=1.1.1",
     "metaworld @ git+https://github.com/reginald-mclean/Metaworld.git@same-step-autoreset",
     "packaging>=24.0",
+    "jax>=0.9.2",
+    "optax>=0.2.8",
+    "distrax>=0.1.7",
+    "flax>=0.12.6",
 ]
 
 [tool.setuptools]

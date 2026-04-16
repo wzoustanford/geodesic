@@ -38,7 +38,7 @@ class Agent(ABC):
 # ============================================================================
 #
 # BaseQLAgent abstract hooks (all subclasses):
-#   _make_network(state_dim) -> nn.Module
+#   _make_critic(state_dim) -> nn.Module
 #   _transform_actions(actions) -> Tensor (dataset actions → network format)
 #   select_actions(states) -> Tensor
 #
@@ -49,7 +49,7 @@ class BaseQLAgent(Agent):
     """
     Shared base for Q-learning agents with double Q-networks.
     Handles: __init__, update, _update_single_q, _soft_update_targets, save, load, train.
-    Subclasses must implement: _make_network, _transform_actions, select_actions, compute_cql_loss.
+    Subclasses must implement: _make_critic, _transform_actions, select_actions, compute_cql_loss.
     """
 
     def __init__(
@@ -72,10 +72,10 @@ class BaseQLAgent(Agent):
         self.device = device
 
         # Build Q-networks via subclass factory
-        self.q1 = self._make_network(state_dim).to(device)
-        self.q2 = self._make_network(state_dim).to(device)
-        self.q1_target = self._make_network(state_dim).to(device)
-        self.q2_target = self._make_network(state_dim).to(device)
+        self.q1 = self._make_critic(state_dim).to(device)
+        self.q2 = self._make_critic(state_dim).to(device)
+        self.q1_target = self._make_critic(state_dim).to(device)
+        self.q2_target = self._make_critic(state_dim).to(device)
 
         # Initialize targets to match online networks
         self.q1_target.load_state_dict(self.q1.state_dict())
@@ -99,7 +99,7 @@ class BaseQLAgent(Agent):
     # ------------------------------------------------------------------
 
     @abstractmethod
-    def _make_network(self, state_dim: int) -> nn.Module:
+    def _make_critic(self, state_dim: int) -> nn.Module:
         """Return a new Q-network instance (not yet moved to device)."""
         ...
 
@@ -390,8 +390,8 @@ class DiscreteQLAgent(BaseQLAgent):
     # Discrete: compute_cql_loss (exact logsumexp over all actions)
     # ------------------------------------------------------------------
 
-    ## [Note: CQL should be for completeness only, we don't use the loss in experiments]
-    ## [Note: there is no temperature definition in the cql code]
+    ## [Note: CQL should be for completeness only, we may not use the loss in experiments]
+    ## [Note: there is no temperature definition in the cql code] 
     def compute_cql_loss(
         self,
         states: torch.Tensor,
@@ -421,7 +421,7 @@ class BinaryActionQLAgent(DiscreteQLAgent):
     def __init__(self, state_dim: int, **kwargs):
         super().__init__(state_dim, **kwargs)
 
-    def _make_network(self, state_dim: int) -> nn.Module:
+    def _make_critic(self, state_dim: int) -> nn.Module:
         return BinaryActionQNetwork(state_dim)
 
     def _num_actions(self) -> int:
@@ -457,7 +457,7 @@ class MultinomialActionQLAgent(DiscreteQLAgent):
         self.a2_bin_edges = np.linspace(0, 0.5, a2_bins + 1)
         super().__init__(state_dim, **kwargs)
 
-    def _make_network(self, state_dim: int) -> nn.Module:
+    def _make_critic(self, state_dim: int) -> nn.Module:
         return MultinomialActionQNetwork(state_dim, self.a2_bins)
 
     def _num_actions(self) -> int:
@@ -566,7 +566,7 @@ class SACAgent(BaseQLAgent):
         layers.append(nn.Linear(self.hidden_dim, action_dim * 2))
         return nn.Sequential(*layers)
 
-    def _make_network(self, state_dim) -> nn.Module:
+    def _make_critic(self, state_dim) -> nn.Module:
         """Q-network for continuous actions: takes (state, action) as two args."""
         return ConcatQNetwork(state_dim, self.action_dim, self.hidden_dim, self.depth)
 

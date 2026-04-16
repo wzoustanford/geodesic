@@ -23,14 +23,14 @@ uv sync
 
 Python 3.12 is required — mujoco and metaworld do not yet have wheels for newer versions. 
 
-## Metaworld
+## Online RL 
 python -m tests.ut_online_rl_metaworld_mt10
 
 ## Offline RL 
-prepare/generate your dataset (sample_data_oviss.csv), with 18 features and 1 action defined in configs/vaso_single_action_data_config, in trajectory sequences 
-the data will be offline trajetories already collected, and will be split into train/val/test 
-
 python -m tests.ut_offline_rl 
+
+random sample data: offline_rl_random_sample_data.csv
+works with offline trajetories to be split into train/val/test sets 
 
 ## Algorithms 
 - DQN (Q-learning)
@@ -40,6 +40,13 @@ python -m tests.ut_offline_rl
 - Binary (QL)
 - Discrete/multinomial (QL)
 - Continous (SAC) 
+
+## JAX 
+- Multi-task RL on metaworld
+- MTSAC 
+
+JAX speed-up 
+![alt text](imgs/metaworld_mt10_jax_vs_pytorch.png)
 
 ## RLDataset Schema 
 
