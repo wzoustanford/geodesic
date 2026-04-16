@@ -3,10 +3,12 @@ import jax.numpy as jnp
 import numpy as np
 import optax
 import distrax
+import os
 import flax.linen as nn
+import orbax.checkpoint as ocp
 from flax.training.train_state import TrainState
 from agents import SACAgent, Agent
-from jax_models import JAXConcatQNetwork, ActorNetwork, Temperature, CriticTrainState
+from jax_models import JAXConcatQNetwork, ActorNetwork, Ensemble, Temperature, CriticTrainState
 
 
 ## [proposal] framework design protocal, jax accelerated code can be listed on the top section as pure functions 
@@ -46,7 +48,7 @@ def _update_pure(actor, critic, alpha, key,
         def compute_target(ns, r, d):
             next_actions, next_log_probs = _select_actions(actor, ns, critic_key)
             target_qs = critic.apply_fn(critic.target_params, ns, next_actions)
-            min_q = jnp.min(target_qs, axis=0).squeeze(-1)
+            min_q = jnp.min(target_qs, axis=1).squeeze(-1)
             return r + gamma * (1 - d) * (min_q - alpha_val * next_log_probs)
 
         target_q = jax.lax.stop_gradient(
@@ -56,7 +58,8 @@ def _update_pure(actor, critic, alpha, key,
         # Critic loss per task
         def critic_loss_fn(params, s, a, tq):
             q_pred = critic.apply_fn(params, s, a)
-            return ((q_pred.squeeze(-1) - tq) ** 2).mean()
+            min_q_pred = jnp.min(q_pred, axis = 1).squeeze(-1)
+            return ((min_q_pred - tq) ** 2).mean()
 
         critic_loss, critic_grads = jax.vmap(
             jax.value_and_grad(critic_loss_fn),
@@ -67,7 +70,7 @@ def _update_pure(actor, critic, alpha, key,
     else:
         next_actions, next_log_probs = _select_actions(actor, next_states, critic_key)
         target_qs = critic.apply_fn(critic.target_params, next_states, next_actions)
-        min_q = jnp.min(target_qs, axis=0).squeeze(-1)
+        min_q = jnp.min(target_qs, axis=1).squeeze(-1)
         target_q = rewards + gamma * (1 - dones) * (
             min_q - alpha_val * next_log_probs
         )
@@ -75,7 +78,8 @@ def _update_pure(actor, critic, alpha, key,
 
         def critic_loss_fn(params):
             q_pred = critic.apply_fn(params, states, actions)
-            return ((q_pred.squeeze(-1) - target_q) ** 2).mean()
+            min_q_pred = jnp.min(q_pred, axis = 1).squeeze(-1)
+            return ((min_q_pred - target_q) ** 2).mean()
 
         critic_loss, critic_grads = jax.value_and_grad(critic_loss_fn)(critic.params)
 
@@ -86,7 +90,7 @@ def _update_pure(actor, critic, alpha, key,
         def actor_loss_fn(actor_params, s):
             a, lp = _select_actions(actor.replace(params=actor_params), s, actor_key)
             q_vals = critic.apply_fn(critic.params, s, a)
-            min_q = jnp.min(q_vals, axis=0)
+            min_q = jnp.min(q_vals, axis=1)
             return (alpha_val * lp - min_q).mean(), lp
 
         (actor_loss, log_probs), actor_grads = jax.vmap(
@@ -100,7 +104,7 @@ def _update_pure(actor, critic, alpha, key,
         def actor_loss_fn(actor_params):
             a, lp = _select_actions(actor.replace(params=actor_params), states, actor_key)
             q_vals = critic.apply_fn(critic.params, states, a)
-            min_q = jnp.min(q_vals, axis=0)
+            min_q = jnp.min(q_vals, axis=1)
             return (alpha_val * lp - min_q).mean(), lp
 
         (actor_loss, log_probs), actor_grads = jax.value_and_grad(
@@ -191,7 +195,12 @@ class JAXSACAgent(SACAgent):
         return ActorNetwork(self.hidden_dim, self.depth, action_dim)
 
     def _make_critic(self, state_dim):
-        return JAXConcatQNetwork(self.hidden_dim, self.depth)
+        return Ensemble(
+            net_cls=JAXConcatQNetwork,
+            num=2,
+            hidden_dim = self.hidden_dim, 
+            depth = self.depth,
+        )
 
     def sample_action(self, obs):
         self.key, action_key = jax.random.split(self.key)
@@ -216,3 +225,44 @@ class JAXSACAgent(SACAgent):
         self.training_step += 1
 
         return {k: float(v) for k, v in logs.items()}
+
+    def save(self, path, epoch=None, data_config=None):
+        path = os.path.abspath(path)
+        data_config_name = type(data_config).__name__ if data_config else ''
+        ckpt = {
+            'actor': self.actor,
+            'critic': self.critic,
+            'alpha': self.alpha,
+            'key': self.key,
+            'training_step': np.array(self.training_step),
+            'epoch': np.array(epoch or 0),
+            'data_config': np.array(list(data_config_name.encode('utf-8')), dtype=np.uint8),
+        }
+        checkpointer = ocp.StandardCheckpointer()
+        checkpointer.save(path, ckpt)
+        checkpointer.wait_until_finished()
+        checkpointer.close() ## uses async io, ensure checkpointer is closed or error 
+        print(f"Model saved to {path}")
+
+    def load(self, path):
+        path = os.path.abspath(path)
+        target = {
+            'actor': self.actor,
+            'critic': self.critic,
+            'alpha': self.alpha,
+            'key': self.key,
+            'training_step': np.array(self.training_step),
+            'epoch': np.array(0),
+            'data_config': np.array([], dtype=np.uint8),
+        }
+        checkpointer = ocp.StandardCheckpointer()
+        restored = checkpointer.restore(path, target)
+        self.actor = restored['actor']
+        self.critic = restored['critic']
+        self.alpha = restored['alpha']
+        self.key = restored['key']
+        self.training_step = int(restored['training_step'])
+        epoch = int(restored['epoch'])
+        data_config_name = bytes(restored['data_config'].tolist()).decode('utf-8')
+        print(f"Model loaded from {path}")
+        return epoch, data_config_name
