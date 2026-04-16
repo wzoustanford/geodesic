@@ -25,7 +25,7 @@ def ut_mt10_online_jax():
     orc = Orchestrator(
         agent=agent,
         data_config=data_config,
-        num_epochs=5,
+        num_epochs=10,
         env_config=env_config,
         warmstart_steps=100,
     )

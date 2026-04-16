@@ -37,6 +37,25 @@ class ActorNetwork(nn.Module):
         return nn.Dense(self.action_dim * 2)(x)
 
 
+class Ensemble(nn.Module):
+    """Wraps a module class to create num independent copies with shared architecture."""
+    net_cls: type
+    num: int = 2
+    hidden_dim: int = 128
+    depth: int = 2
+
+    @nn.compact
+    def __call__(self, *args):
+        return nn.vmap(
+            self.net_cls,
+            variable_axes={"params": 0},
+            split_rngs={"params": True},
+            in_axes=None,
+            out_axes=1,  # output: (batch, num, ...)
+            axis_size=self.num,
+        )(hidden_dim=self.hidden_dim, depth=self.depth)(*args)
+
+
 class JAXConcatQNetwork(nn.Module):
     """Q-network that concatenates state and action before the MLP."""
     hidden_dim: int

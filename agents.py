@@ -390,8 +390,8 @@ class DiscreteQLAgent(BaseQLAgent):
     # Discrete: compute_cql_loss (exact logsumexp over all actions)
     # ------------------------------------------------------------------
 
-    ## [Note: CQL should be for completeness only, we don't use the loss in experiments]
-    ## [Note: there is no temperature definition in the cql code]
+    ## [Note: CQL should be for completeness only, we may not use the loss in experiments]
+    ## [Note: there is no temperature definition in the cql code] 
     def compute_cql_loss(
         self,
         states: torch.Tensor,
