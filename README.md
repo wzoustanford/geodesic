@@ -37,6 +37,7 @@ random sample data: offline_rl_random_sample_data.csv
 works with offline trajetories to be split into train/val/test sets 
 
 ## VLA 
+```
 ┌─────────────────────────── Geodesic runtime ───────────────────────────┐
 │                                                                        │
 │   ┌──────────────────────┐      ┌───────────────────────────────────┐  │
@@ -45,7 +46,7 @@ works with offline trajetories to be split into train/val/test sets
 │   └──────────────────────┘      │  – SequenceDataset  (+ images)    │  │
 │           ▲                     │  – VLADataset  (RLDS bridge) NEW  │  │
 │           │ actions             └──────────────┬────────────────────┘  │
-│           │                                    │ batches                │
+│           │                                    │ batches               │
 │   ┌───────┴─────────────┐   forward/CE loss   ▼                        │
 │   │  Env (Metaworld /   │    ┌────────────────────────────────────┐    │
 │   │  LIBERO / DROID     │◀───│         VLAAgent(Agent)   NEW      │    │
@@ -60,6 +61,7 @@ works with offline trajetories to be split into train/val/test sets
 │                              │   Llama-2-7B + DINOv2 + SigLIP     │    │
 │                              └────────────────────────────────────┘    │
 └────────────────────────────────────────────────────────────────────────┘
+```
 
 ## Algorithms 
 - DQN (Q-learning)
