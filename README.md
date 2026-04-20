@@ -54,7 +54,7 @@ JAX speed-up
 
 ## RLDataset Schema 
 
-| Field | Type | Shape | Description |
+| Field | Type | Dimensions | Description |
 |---|---|---|---|
 | `states` | `np.ndarray` | `(N, S)` | Normalized observed states for each transition |
 | `actions` | `np.ndarray` | `(N, A)` | Actions taken at each transition |
