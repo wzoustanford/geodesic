@@ -6,7 +6,8 @@ Geodesic: shortest path to deployment for reinforcement learning
 Applications: Robotics, VLA, LLM Post-training, RL research 
 
 ## News! 
-April 20th, 2026: Geodesic is supporting Ray integration (\href{https://github.com/wzoustanford/geodesic/pull/11}{PR11}). Parallel experience replay is implemented with distributed tasks.
+April 20th, 2026: Geodesic supports Ray integration [PR11](https://github.com/wzoustanford/geodesic/pull/11). Parallel experience replay is implemented with distributed tasks.
+April 16th, 2026: Geodesic supports JAX, for SAC on Metaworld [PR9](https://github.com/wzoustanford/geodesic/pull/9). 
 
 ## Setup
 
