@@ -1,7 +1,8 @@
-import torch 
-from torch import nn 
+import torch
+from torch import nn
 
 import torch.nn.functional as F
+import ray
 
 # ============================================================================
 # Binary Action QL Model
@@ -104,3 +105,43 @@ class ConcatQNetwork(nn.Module):
 
     def forward(self, states, actions):
         return self.mlp(torch.cat([states, actions], dim=-1))
+
+
+# ============================================================================
+# Shared Storage for Parallel Training
+# ============================================================================
+
+@ray.remote
+class ModelSharedStorage:
+    """Ray actor that stores model weights for worker synchronization.
+
+    The training loop pushes updated actor params after gradient steps.
+    DataWorkers pull actor params to run the policy in their environments.
+    As a Ray actor, all method calls are serialized — no explicit locks needed.
+
+    For JAX agents, only params (pytrees of arrays) are stored — not apply_fn
+    or opt_state, which are non-serializable and only needed by the trainer.
+    Workers reconstruct a local TrainState shell and swap in the params.
+    """
+    def __init__(self):
+        self.weights = None
+        self.step_counter = 0
+        self.warmstart_done = False
+
+    def get_weights(self):
+        return self.weights
+
+    def set_weights(self, weights):
+        self.weights = weights
+
+    def get_counter(self):
+        return self.step_counter
+
+    def incr_counter(self):
+        self.step_counter += 1
+
+    def get_warmstart_signal(self):
+        return self.warmstart_done
+
+    def set_warmstart_signal(self):
+        self.warmstart_done = True

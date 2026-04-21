@@ -17,6 +17,7 @@ dependencies = [
     "optax>=0.2.8",
     "distrax>=0.1.7",
     "flax>=0.12.6",
+    "ray>=2.55.0",
 ]
 
 [tool.setuptools]

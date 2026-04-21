@@ -1,11 +1,14 @@
-import torch, copy
+import torch, copy, threading, time
 from torch.utils.data import Dataset, DataLoader
 from typing import Tuple, List, Dict
 from collections import deque
+from queue import Empty
 import numpy as np, pandas as pd
 from sklearn.preprocessing import StandardScaler
 from projects.vaso.utils import compute_vaso_clinician_rewards
 from sklearn.model_selection import train_test_split
+from ray.util.queue import Queue
+
 #import logging #[logging to be implemented later to replace print()]
 
 """
@@ -49,16 +52,18 @@ class SequenceDataset(Dataset):
         self.rewards = deque(maxlen=capacity)
         self.next_states = deque(maxlen=capacity)
         self.dones = deque(maxlen=capacity)
+        self._lock = threading.Lock()
 
     def add_transition(self, state, action, reward, next_state, done):
-        self._buf_s.append(np.asarray(state, dtype=np.float32))
-        self._buf_a.append(np.asarray(action, dtype=np.float32))
-        self._buf_r.append(np.asarray(reward, dtype=np.float32))
-        self._buf_ns.append(np.asarray(next_state, dtype=np.float32))
-        self._buf_d.append(np.asarray(done, dtype=np.float32))
-        if len(self._buf_s) >= self.seq_len:
-            if (len(self._buf_s) - self.seq_len) % self.stride == 0:
-                self._store_window(len(self._buf_s) - self.seq_len)
+        with self._lock:
+            self._buf_s.append(np.asarray(state, dtype=np.float32))
+            self._buf_a.append(np.asarray(action, dtype=np.float32))
+            self._buf_r.append(np.asarray(reward, dtype=np.float32))
+            self._buf_ns.append(np.asarray(next_state, dtype=np.float32))
+            self._buf_d.append(np.asarray(done, dtype=np.float32))
+            if len(self._buf_s) >= self.seq_len:
+                if (len(self._buf_s) - self.seq_len) % self.stride == 0:
+                    self._store_window(len(self._buf_s) - self.seq_len)
 
     def _store_window(self, start):
         end = start + self.seq_len
@@ -76,13 +81,25 @@ class SequenceDataset(Dataset):
         return len(self.states)
 
     def __getitem__(self, idx):
-        return (
-            self.states[idx],
-            self.actions[idx],
-            self.rewards[idx],
-            self.next_states[idx],
-            self.dones[idx],
-        )
+        with self._lock:
+            return (
+                self.states[idx],
+                self.actions[idx],
+                self.rewards[idx],
+                self.next_states[idx],
+                self.dones[idx],
+            )
+
+    def sample_batch(self, batch_size):
+        with self._lock:
+            indices = np.random.randint(0, len(self), size=batch_size)
+            return (
+                np.stack([self.states[i] for i in indices]),
+                np.stack([self.actions[i] for i in indices]),
+                np.array([self.rewards[i] for i in indices]),
+                np.stack([self.next_states[i] for i in indices]),
+                np.array([self.dones[i] for i in indices]),
+            )
 
 class PrioritySampler(torch.utils.data.Sampler):
     """Implements a sum-tree algorithm for prioritized experience replay."""
@@ -167,6 +184,44 @@ class SequenceDataCollection:
         except StopIteration:
             self._iter = iter(self.data_loader)
             return next(self._iter)
+
+class ParallelReplayBuffer(SequenceDataCollection):
+    """Parallel replay buffer for multi-worker online RL data collection.
+
+    Multiple Ray actor workers interact with the environment in parallel,
+    each producing (s, a, r, s', done) transitions that are pushed into a
+    shared Ray Queue. A background daemon thread drains the queue into the
+    local SequenceDataset at a configurable frequency, using thread locks
+    to ensure consistency. The local dataset remains compatible with PyTorch
+    DataLoader, preserving lazy loading and parallel prefetch capabilities.
+
+    Reference: Massively Parallel Methods for Deep Reinforcement Learning,
+    Nair et al. 2015 (https://arxiv.org/abs/1507.04296)
+    """
+    def __init__(self, data_config, maxsize=1000, drain_interval=1.0, drain_threshold=64):
+        super().__init__(data_config)
+        self.queue = Queue(maxsize=maxsize)
+        self.drain_interval = drain_interval
+        self.drain_threshold = drain_threshold
+        self._drain_thread = None
+
+    def start_drain(self): 
+        ## start a daemon to continuously drain the Ray Queue which collects data from DataWorkers 
+        self._drain_thread = threading.Thread(target=self._drain_loop, daemon=True)
+        self._drain_thread.start()
+
+    def _drain_loop(self):
+        while True:
+            time.sleep(self.drain_interval)
+            if self.queue.qsize() < self.drain_threshold:
+                continue
+            while True:
+                try:
+                    transition = self.queue.get_nowait()
+                    self.dataset.add_transition(*transition)
+                except Empty:
+                    break
+
 
 class OfflineRLDataCollection:
     def __init__(self, data_config, reward_model=None): 
