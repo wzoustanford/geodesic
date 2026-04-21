@@ -5,6 +5,9 @@ Geodesic: shortest path to deployment for reinforcement learning
 
 Applications: Robotics, VLA, LLM Post-training, RL research 
 
+## News! 
+April 20th, 2026: Geodesic is supporting Ray integration (\href{https://github.com/wzoustanford/geodesic/pull/11}{PR11}). Parallel experience replay is implemented with distributed tasks.
+
 ## Setup
 
 Install [uv](https://docs.astral.sh/uv/) if you don't have it:
