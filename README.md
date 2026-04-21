@@ -1,6 +1,6 @@
 ![alt text](imgs/rl_sys_uml.png)
 
-## Geodesic: Open-source Reinforcement Learning Framework 
+## Geodesic: Open-source Foundational Reinforcement Learning Framework 
 Geodesic: shortest path to deployment for reinforcement learning 
 
 Applications: Robotics, VLA, LLM Post-training, RL research 
