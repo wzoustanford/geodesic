@@ -8,7 +8,7 @@ import flax.linen as nn
 import orbax.checkpoint as ocp
 from flax.training.train_state import TrainState
 from agents import SACAgent, Agent
-from jax_models import JAXConcatQNetwork, ActorNetwork, Ensemble, Temperature, CriticTrainState, MOORENetwork
+from jax_models import JAXConcatQNetwork, ActorNetwork, Ensemble, Temperature, CriticTrainState
 
 
 ## [proposal] framework design protocal, jax accelerated code can be listed on the top section as pure functions 
@@ -35,11 +35,6 @@ def _update_pure(actor, critic, alpha, key,
     key, critic_key, actor_key = jax.random.split(key, 3)
     alpha_val = alpha.apply_fn(alpha.params)
 
-    # Critic input format: [obs | action | task_oh]. Required by MOORE (which
-    # routes via the trailing one-hot); a harmless rearrangement for plain MLP critics.
-    def _q_in(s, a):
-        return jnp.concatenate([s[..., :-num_tasks], a, s[..., -num_tasks:]], axis=-1)
-
     if use_task_vmap:
         # Reshape flat (N, feat) → (num_tasks, per_task_batch, feat)
         def reshape_by_task(x):
@@ -52,7 +47,7 @@ def _update_pure(actor, critic, alpha, key,
         # Compute target Q per task
         def compute_target(ns, r, d):
             next_actions, next_log_probs = _select_actions(actor, ns, critic_key)
-            target_qs = critic.apply_fn(critic.target_params, _q_in(ns, next_actions))
+            target_qs = critic.apply_fn(critic.target_params, ns, next_actions)
             min_q = jnp.min(target_qs, axis=1).squeeze(-1)
             return r + gamma * (1 - d) * (min_q - alpha_val * next_log_probs)
 
@@ -62,7 +57,7 @@ def _update_pure(actor, critic, alpha, key,
 
         # Critic loss per task
         def critic_loss_fn(params, s, a, tq):
-            q_pred = critic.apply_fn(params, _q_in(s, a))
+            q_pred = critic.apply_fn(params, s, a)
             min_q_pred = jnp.min(q_pred, axis = 1).squeeze(-1)
             return ((min_q_pred - tq) ** 2).mean()
 
@@ -74,7 +69,7 @@ def _update_pure(actor, critic, alpha, key,
         critic_grads = jax.tree.map(lambda x: x.mean(axis=0), critic_grads)
     else:
         next_actions, next_log_probs = _select_actions(actor, next_states, critic_key)
-        target_qs = critic.apply_fn(critic.target_params, _q_in(next_states, next_actions))
+        target_qs = critic.apply_fn(critic.target_params, next_states, next_actions)
         min_q = jnp.min(target_qs, axis=1).squeeze(-1)
         target_q = rewards + gamma * (1 - dones) * (
             min_q - alpha_val * next_log_probs
@@ -82,7 +77,7 @@ def _update_pure(actor, critic, alpha, key,
         target_q = jax.lax.stop_gradient(target_q)
 
         def critic_loss_fn(params):
-            q_pred = critic.apply_fn(params, _q_in(states, actions))
+            q_pred = critic.apply_fn(params, states, actions)
             min_q_pred = jnp.min(q_pred, axis = 1).squeeze(-1)
             return ((min_q_pred - target_q) ** 2).mean()
 
@@ -94,7 +89,7 @@ def _update_pure(actor, critic, alpha, key,
     if use_task_vmap:
         def actor_loss_fn(actor_params, s):
             a, lp = _select_actions(actor.replace(params=actor_params), s, actor_key)
-            q_vals = critic.apply_fn(critic.params, _q_in(s, a))
+            q_vals = critic.apply_fn(critic.params, s, a)
             min_q = jnp.min(q_vals, axis=1)
             return (alpha_val * lp - min_q).mean(), lp
 
@@ -108,7 +103,7 @@ def _update_pure(actor, critic, alpha, key,
     else:
         def actor_loss_fn(actor_params):
             a, lp = _select_actions(actor.replace(params=actor_params), states, actor_key)
-            q_vals = critic.apply_fn(critic.params, _q_in(states, a))
+            q_vals = critic.apply_fn(critic.params, states, a)
             min_q = jnp.min(q_vals, axis=1)
             return (alpha_val * lp - min_q).mean(), lp
 
@@ -186,10 +181,9 @@ class JAXSACAgent(SACAgent):
         )
 
         # Critics: self.q1/q2 + targets + optimizers → CriticTrainState
-        # Critic input is the assembled [obs | action | task_oh] (see _q_in in _update_pure).
         critic_net = self._make_critic(state_dim)
-        dummy_q_in = jnp.ones((1, state_dim + action_dim))
-        critic_params = critic_net.init(critic_key, dummy_q_in)
+        dummy_act = jnp.ones((1, action_dim))
+        critic_params = critic_net.init(critic_key, dummy_obs, dummy_act)
         self.critic = CriticTrainState.create(
             apply_fn=critic_net.apply,
             params=critic_params,
@@ -204,7 +198,8 @@ class JAXSACAgent(SACAgent):
         return Ensemble(
             net_cls=JAXConcatQNetwork,
             num=2,
-            net_kwargs=(("hidden_dim", self.hidden_dim), ("depth", self.depth)),
+            hidden_dim = self.hidden_dim, 
+            depth = self.depth,
         )
 
     def sample_action(self, obs):
@@ -271,41 +266,3 @@ class JAXSACAgent(SACAgent):
         data_config_name = bytes(restored['data_config'].tolist()).decode('utf-8')
         print(f"Model loaded from {path}")
         return epoch, data_config_name
-
-
-class MooreSACAgent(JAXSACAgent):
-    """SAC with the MOORE (Orthogonalized Mixture-Of-Experts) network for both
-    actor and critic. Inherits the SAC training loop from JAXSACAgent unchanged;
-    only the network factories change.
-
-    The actor takes states directly (states already include the trailing task
-    one-hot). The critic receives the assembled [obs | action | task_oh] from
-    _update_pure._q_in, and routes via the trailing one-hot just like the actor.
-    """
-
-    def __init__(self, *args, num_experts: int = 6, **kwargs):
-        # Set num_experts before super().__init__ so _make_actor / _make_critic see it.
-        self.num_experts = num_experts
-        super().__init__(*args, **kwargs)
-
-    def _make_actor(self, state_dim, action_dim):
-        return MOORENetwork(
-            num_tasks=self.num_tasks,
-            head_dim=action_dim * 2,   # mean + log_std for each action dim
-            width=self.hidden_dim,
-            depth=self.depth,
-            num_experts=self.num_experts,
-        )
-
-    def _make_critic(self, state_dim):
-        return Ensemble(
-            net_cls=MOORENetwork,
-            num=2,
-            net_kwargs=(
-                ("num_tasks", self.num_tasks),
-                ("head_dim", 1),                  # Q value
-                ("width", self.hidden_dim),
-                ("depth", self.depth),
-                ("num_experts", self.num_experts),
-            ),
-        )
