@@ -28,6 +28,17 @@ uv sync
 
 Python 3.12 is required — mujoco and metaworld do not yet have wheels for newer versions. 
 
+## Tests
+
+Run the lightweight unit test suite with:
+```bash
+uv run --with pytest pytest -q tests/test_*.py
+```
+
+Current tests cover Vaso reward logic, `SequenceDataset` windowing and batch shapes, and multinomial action discretization. The `tests/ut_*` files are longer training smoke scripts and are not part of the default unit test suite.
+
+Planned coverage: offline data preparation, orchestrator training metrics, checkpoint save/load, Ray replay lifecycle, MetaWorld/JAX smoke tests, and VLA data/model wrappers.
+
 ## Online RL 
 ```bash
 python -m tests.ut_online_rl_metaworld_mt10
@@ -101,4 +112,3 @@ JAX speed-up
 
 ## Contributions
 We are looking for core developers, reachout to will@angle.ac
-

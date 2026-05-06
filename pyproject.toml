@@ -21,7 +21,14 @@ dependencies = [
 ]
 
 [tool.setuptools]
-py-modules = ["datasets", "orchestrator", "agents", "environments"]
+py-modules = ["datasets", "orchestrator", "agents", "models", "jax_agents", "jax_models"]
+
+[tool.setuptools.packages.find]
+include = ["configs*", "envs*", "projects*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
 
 [build-system]
 requires = ["setuptools>=75.0"]
