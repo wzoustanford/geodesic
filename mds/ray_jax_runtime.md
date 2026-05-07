@@ -204,26 +204,35 @@ trajectory metadata. This makes off-policy data provenance explicit.
 
 1. Add a VLA sequence schema for images, language instructions, action chunks,
    task ids, and dataset provenance.
-2. Define runtime interface types around the existing `SequenceDataset`,
-   `ParallelReplayBuffer`, `DataWorker`, `ModelSharedStorage`, learners, and
-   evaluators.
-3. Add lightweight tests for `ParallelReplayBuffer` queue draining and
-   `PrioritySampler` behavior.
-4. Document and test the existing `ModelSharedStorage` parameter sync path.
-5. Add a synthetic distributed smoke test that exercises Ray Queue transport,
-   replay draining, learner update, parameter publish, and evaluation.
-6. Replace the synthetic environment with a MetaWorld or LIBERO smoke task.
-7. Extend the VLA schema into loader utilities for RLDS, DROID, or LeRobot-style
-   datasets.
+2. Add synthetic schema fixtures and validation helpers for RL and VLA sequence
+   batches.
+3. Expand tests for `SequenceDataset` and `PrioritySampler`, covering sequence
+   windows, stride, capacity eviction, priority updates, and sampling weights.
+4. Make `ParallelReplayBuffer` easier to test with a deterministic drain helper,
+   then cover Ray Queue draining with lightweight tests.
+5. Add tests for `ModelSharedStorage`, including weight publishing, step
+   counters, warmstart signals, and worker sync intervals.
+6. Introduce runtime data types around existing components, such as sequence
+   batches, VLA batches, policy payloads, worker metadata, and rollout
+   fragments.
+7. Add a synthetic distributed runtime smoke test that exercises worker
+   collection, Ray Queue transport, replay draining, learner update, parameter
+   publish, and evaluation.
+8. Add minimal runtime metrics for queue size, buffer size, samples per second,
+   learner step, policy version, worker count, return, and success rate.
+9. Add an optional MetaWorld or LIBERO runtime smoke test after the synthetic
+   loop is stable.
+10. Add a VLA dataset adapter prototype that emits the standard VLA batch schema
+    from RLDS, DROID, or LeRobot-style datasets.
 
 ## Testing Strategy
 
 Tests should avoid heavy simulator dependencies unless they are explicitly
 marked as smoke or integration tests.
 
-- Unit tests: data schema validation, sequence replay sampling, priority
-  sampling, model storage versioning.
-- Runtime smoke tests: local Ray cluster with synthetic workers.
+- Unit tests: schema fixtures and validation, sequence replay sampling,
+  priority sampling, model storage versioning.
+- Runtime smoke tests: local Ray cluster with synthetic workers and fake learner.
 - JAX tests: deterministic update step with fixed PRNG keys.
 - Integration tests: MetaWorld/LIBERO rollout behind optional markers.
 - VLA tests: image-language-action batch shape and dtype checks.
