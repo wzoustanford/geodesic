@@ -53,6 +53,9 @@ random sample data: offline_rl_random_sample_data.csv
 works with offline trajetories to be split into train/val/test sets 
 
 ## VLA 
+
+Runtime architecture: [Ray + JAX robotics/VLA runtime](mds/ray_jax_runtime.md)
+
 ```
 ┌─────────────────────────── Geodesic runtime ───────────────────────────┐
 │                                                                        │
