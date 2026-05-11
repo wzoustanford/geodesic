@@ -39,7 +39,7 @@ def _update_pure(actor, critic, alpha, key,
     # routes via the trailing one-hot); a harmless rearrangement for plain MLP critics.
     def _q_in(s, a):
         return jnp.concatenate([s[..., :-num_tasks], a, s[..., -num_tasks:]], axis=-1)
-
+    
     if use_task_vmap:
         # Reshape flat (N, feat) → (num_tasks, per_task_batch, feat)
         def reshape_by_task(x):
@@ -150,7 +150,8 @@ class JAXSACAgent(SACAgent):
     """
 
     def __init__(self, state_dim, action_dim, num_tasks=10, use_task_vmap=False,
-                 hidden_dim=400, depth=3, lr=3e-3, gamma=0.95, tau=0.005, seed=42):
+                 hidden_dim=400, depth=3, lr=3e-3, gamma=0.95, tau=0.005, seed=42,
+                 actor_lr=None, critic_lr=None, alpha_lr=None, max_grad_norm=None):
         self.action_dim = action_dim
         self.num_tasks = num_tasks
         self.use_task_vmap = use_task_vmap
@@ -162,6 +163,18 @@ class JAXSACAgent(SACAgent):
         self.tau = tau
         self.training_step = 0
         self.target_entropy = -action_dim
+        # Per-component learning rates fall back to shared `lr` if not specified.
+        actor_lr = actor_lr if actor_lr is not None else lr
+        critic_lr = critic_lr if critic_lr is not None else lr
+        alpha_lr = alpha_lr if alpha_lr is not None else lr
+
+        # Optimizer factory: optionally clip global grad norm (actor/critic only;
+        # the reference does not clip the temperature optimizer).
+        def _opt(lr_val, clip=False):
+            adam = optax.adam(lr_val)
+            if clip and max_grad_norm is not None:
+                return optax.chain(optax.clip_by_global_norm(max_grad_norm), adam)
+            return adam
 
         # RNG key management (replaces PyTorch global RNG)
         key = jax.random.PRNGKey(seed)
@@ -174,7 +187,7 @@ class JAXSACAgent(SACAgent):
         self.actor = TrainState.create(
             apply_fn=actor_net.apply,
             params=actor_net.init(actor_key, dummy_obs),
-            tx=optax.adam(lr),
+            tx=_opt(actor_lr, clip=True),
         )
 
         # Temperature: self.log_alpha + self.alpha_optimizer → TrainState
@@ -182,7 +195,7 @@ class JAXSACAgent(SACAgent):
         self.alpha = TrainState.create(
             apply_fn=alpha_net.apply,
             params=alpha_net.init(alpha_key),
-            tx=optax.adam(lr),
+            tx=_opt(alpha_lr, clip=False),
         )
 
         # Critics: self.q1/q2 + targets + optimizers → CriticTrainState
@@ -194,7 +207,7 @@ class JAXSACAgent(SACAgent):
             apply_fn=critic_net.apply,
             params=critic_params,
             target_params=critic_params,
-            tx=optax.adam(lr),
+            tx=_opt(critic_lr, clip=True),
         )
 
     def _make_actor(self, state_dim, action_dim):
