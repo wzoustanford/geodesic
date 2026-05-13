@@ -17,7 +17,9 @@ import math
 import os
 import sys
 
+import numpy as np
 import torch
+from PIL import Image
 from torch.utils.data import DataLoader
 
 from vla_datasets import PaddedCollatorForActionPrediction, VLASchemaFixture
@@ -40,7 +42,20 @@ def ut1_vla_forward_backward():
     from vla_orchestrator import VLAOrchestrator
 
     print("Loading OpenVLA-7B (one-time, ~14 GB bf16)...", flush=True)
-    agent = OpenVLAAgent(use_lora=True, lora_rank=8, grad_accumulation_steps=1, grad_clip=1.0)
+    # unnorm_key picks which dataset's q01/q99 stats to use when denormalizing
+    # predicted actions at inference time (sub-check 4 below). Used in
+    # agent.select_actions -> policy.predict_action.
+    #
+    # Caveat: "bridge_orig" works for openvla/openvla-7b (the base). If you point
+    # the agent at openvla/openvla-7b-finetuned-libero-spatial later, swap to
+    # "libero_spatial_no_noops". The base-vs-finetuned distinction is precisely
+    # what makes UNNORM_KEY an inference-side knob (the data config can't know
+    # which checkpoint the caller picks).
+    agent = OpenVLAAgent(
+        use_lora=True, lora_rank=8,
+        grad_accumulation_steps=1, grad_clip=1.0,
+        unnorm_key="bridge_orig",
+    )
     # Disable checkpoint writes during the smoke test.
     agent.save = lambda *a, **kw: None
 
@@ -86,6 +101,24 @@ def ut1_vla_forward_backward():
     )
     final = orch.start()
     assert "loss" in final and math.isfinite(final["loss"]), final
+
+    # --- sub-check 4: agent.select_actions() — inference / denorm path ---
+    # Exercises the OTHER code path: policy.predict_action -> hf.generate ->
+    # action-token decode -> denormalize via norm_stats[unnorm_key]. This is the
+    # only sub-check that touches `unnorm_key`; the training-time sub-checks
+    # above never read it.
+    fake_obs = {
+        "image": Image.fromarray(
+            np.asarray(np.random.rand(224, 224, 3) * 255, dtype=np.uint8)
+        ),
+        "instruction": "pick up the spoon",
+    }
+    action = agent.select_actions(fake_obs)
+    assert isinstance(action, np.ndarray), type(action)
+    assert action.shape == (7,), action.shape          # OpenVLA-7B is 7-DoF EEF
+    assert np.all(np.isfinite(action)), action
+    print(f"  select_actions(): action={action}")
+
     print(f"[ut1_vla_forward_backward] OK")
 
 
