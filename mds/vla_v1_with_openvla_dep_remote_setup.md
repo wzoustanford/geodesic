@@ -40,6 +40,7 @@ uv sync
 #    constructing RLDSDataset.
 uv pip install 'tensorflow>=2.15' 'tensorflow_datasets>=4.9'
 uv pip install --no-deps 'dlimp @ git+https://github.com/moojink/dlimp_openvla'
+uv pip install --no-deps 'tensorflow_graphics'
 
 # 5. (Optional) Install flash-attn after editable sync, per openvla's README — only
 #    needed if you want fast attention at training time.

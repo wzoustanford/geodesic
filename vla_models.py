@@ -136,6 +136,17 @@ class OpenVLAPolicyModel(nn.Module):
             torch_dtype=torch_dtype,
             low_cpu_mem_usage=True,
             trust_remote_code=True,
+            # transformers >=4.45 auto-detects SDPA dispatch by reading
+            # `model._supports_sdpa`. The openvla model class (cached from the
+            # HF Hub via trust_remote_code=True) was written against 4.40.1 and
+            # doesn't declare this attribute, so auto-detect fails with
+            # `AttributeError: 'OpenVLAForActionPrediction' object has no
+            # attribute '_supports_sdpa'`. Explicitly requesting "eager"
+            # bypasses the SDPA dispatch check. Trade-off: no SDPA-accelerated
+            # attention; for fine-tuning a 7B model on a single GPU this is a
+            # negligible perf hit. Switch to "flash_attention_2" if you
+            # installed flash-attn (Step 5 of the remote setup md).
+            attn_implementation="eager",
         )
         if device is not None:
             hf = hf.to(device)
