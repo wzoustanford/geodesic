@@ -18,10 +18,20 @@ dependencies = [
     "distrax>=0.1.7",
     "flax>=0.12.6",
     "ray>=2.55.0",
+    "transformers>=4.50",
+    "peft>=0.14",
+    "pillow>=10",
+    "einops>=0.8.2",
+    "timm>=0.9.10",
+    "sentencepiece>=0.1.99",
 ]
 
 [tool.setuptools]
-py-modules = ["datasets", "orchestrator", "agents", "environments"]
+py-modules = [
+    "datasets", "orchestrator", "agents", "environments",
+    "models", "jax_agents", "jax_models",
+    "vla_models", "vla_agent", "vla_datasets", "vla_orchestrator",
+]
 
 [build-system]
 requires = ["setuptools>=75.0"]
