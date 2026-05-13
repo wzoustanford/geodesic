@@ -139,27 +139,52 @@ class OpenVLAAgent(Agent):
             self.optimizer.zero_grad()
         self.training_step += 1
 
-        # Diagnostics (match finetune.py:270-286 exactly).
         with torch.no_grad():
-            P = self.policy.vision.num_patches
-            action_logits = out.logits[:, P:-1]              # strip patches + last pos
-            action_preds = action_logits.argmax(dim=-1)
-            action_gt = batch["labels"][:, 1:].to(action_preds.device)
-            mask = action_gt > self.policy.action_tokenizer.action_token_begin_idx
-            n = mask.sum().clamp_min(1)
-            action_token_acc = ((action_preds == action_gt) & mask).sum().float() / n
+            return self._compute_metrics(out, batch)
 
-            # L1 on decoded continuous actions (single shared tokenizer).
-            decode = self.policy.action_tokenizer.decode_token_ids_to_actions
-            pred_c = decode(action_preds[mask].detach().cpu().numpy())
-            gt_c = decode(action_gt[mask].detach().cpu().numpy())
-            l1 = float(np.mean(np.abs(pred_c - gt_c))) if pred_c.size else 0.0
+    def _compute_metrics(self, out, batch: Dict[str, torch.Tensor]) -> Dict[str, float]:
+        """Shared diagnostics for update() and validate(); matches finetune.py:270-286."""
+        P = self.policy.vision.num_patches
+        action_logits = out.logits[:, P:-1]              # strip patches + last pos
+        action_preds = action_logits.argmax(dim=-1)
+        action_gt = batch["labels"][:, 1:].to(action_preds.device)
+        mask = action_gt > self.policy.action_tokenizer.action_token_begin_idx
+        n = mask.sum().clamp_min(1)
+        action_token_acc = ((action_preds == action_gt) & mask).sum().float() / n
+
+        # L1 on decoded continuous actions (single shared tokenizer).
+        decode = self.policy.action_tokenizer.decode_token_ids_to_actions
+        pred_c = decode(action_preds[mask].detach().cpu().numpy())
+        gt_c = decode(action_gt[mask].detach().cpu().numpy())
+        l1 = float(np.mean(np.abs(pred_c - gt_c))) if pred_c.size else 0.0
 
         return {
-            "loss": float(loss.item()),
+            "loss": float(out.loss.item()),
             "action_token_acc": float(action_token_acc.item()),
             "action_l1": l1,
         }
+
+    @torch.no_grad()
+    def validate(self, batch: Dict[str, torch.Tensor]) -> Dict[str, float]:
+        """Forward-only diagnostic on a single batch; same metrics as update(),
+        prefixed with `val_` so logs don't collide.
+        """
+        dev = self.device
+        was_training = self.policy.training
+        self.policy.eval()
+        try:
+            with torch.autocast("cuda", dtype=torch.bfloat16):
+                out = self.policy(
+                    input_ids=batch["input_ids"].to(dev),
+                    attention_mask=batch["attention_mask"].to(dev),
+                    pixel_values=batch["pixel_values"].to(torch.bfloat16).to(dev),
+                    labels=batch["labels"].to(dev),
+                )
+            metrics = self._compute_metrics(out, batch)
+        finally:
+            if was_training:
+                self.policy.train()
+        return {f"val_{k}": v for k, v in metrics.items()}
 
     # ---- checkpoints -------------------------------------------------------
     def save(self, path: Optional[str] = None) -> None:
