@@ -51,6 +51,13 @@ py-modules = [
     "vla_models", "vla_agent", "vla_datasets", "vla_orchestrator",
 ]
 
+[tool.setuptools.packages.find]
+include = ["configs*", "envs*", "projects*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+
 [build-system]
 requires = ["setuptools<=70.2.0"]
 build-backend = "setuptools.build_meta"
