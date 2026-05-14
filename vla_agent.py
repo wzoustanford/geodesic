@@ -88,16 +88,33 @@ class OpenVLAAgent(Agent):
     # ---- inference ---------------------------------------------------------
     @torch.no_grad()
     def select_actions(self, obs: Dict[str, Any]) -> np.ndarray:
-        """obs: {'image': PIL.Image, 'instruction': str}. Returns [action_dim] np.ndarray."""
-        prompt = (
-            f"In: What action should the robot take to {obs['instruction']}?\nOut: "
-        )
-        return self.policy.predict_action(
-            prompt,
-            obs["image"],
-            unnorm_key=self.unnorm_key,
-            do_sample=False,
-        )
+        """obs: {'image': PIL.Image, 'instruction': str}. Returns [action_dim] np.ndarray.
+
+        Inference-only path: greedy `hf.generate` over discretized action tokens,
+        decode, denormalize via `norm_stats[unnorm_key]`.
+        """
+        was_training = self.policy.training
+        # [todo] select_actions is inference-only in this VLA path (supervised IL
+        # with offline demos). Geodesic's RL-style agents (SACAgent, BaseQLAgent)
+        # call select_actions(states) DURING training for actor update / Bellman
+        # targets — there, the model must be in train mode (dropout, etc.) and
+        # may need grads enabled. If a future VLA variant adds Q-learning / SAC
+        # on top of the LM head, plumb an explicit `training: bool = False`
+        # kwarg through here and skip the eval()/no_grad path when it's True.
+        self.policy.eval()
+        try:
+            prompt = (
+                f"In: What action should the robot take to {obs['instruction']}?\nOut: "
+            )
+            return self.policy.predict_action(
+                prompt,
+                obs["image"],
+                unnorm_key=self.unnorm_key,
+                do_sample=False,
+            )
+        finally:
+            if was_training:
+                self.policy.train()
 
     # ---- training update ---------------------------------------------------
     def update(self, batch: Dict[str, torch.Tensor]) -> Dict[str, float]:
@@ -110,6 +127,15 @@ class OpenVLAAgent(Agent):
           labels        : [B, L]             int64, -100 outside action positions
         """
         dev = self.device
+        # HF from_pretrained() returns models in eval mode by default; our
+        # __init__ doesn't flip it. Without this call dropout (e.g. LoRA
+        # dropout when lora_dropout > 0) and other train-time behaviors stay
+        # disabled during training updates. Idempotent + cheap, so we set it
+        # on every update() to also be defensive against external mode changes
+        # (e.g. a caller switching to eval between updates). validate() saves
+        # `was_training` and restores via finally; it will now correctly bounce
+        # back to train mode after each val pass.
+        self.policy.train()
         # Policy weights are already bf16 (loaded via from_pretrained(torch_dtype=
         # torch.bfloat16)), so this autocast is largely a no-op for parameter ops.
         # We keep it for parity with the reference recipe and to cast any stray
