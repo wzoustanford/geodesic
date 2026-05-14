@@ -17,11 +17,39 @@ dependencies = [
     "optax>=0.2.8",
     "distrax>=0.1.7",
     "flax>=0.12.6",
-    "ray>=2.55.0",
+    "ray==2.47.1",
+    "transformers>=4.50,<4.55",
+    "peft>=0.14",
+    "pillow>=10",
+    "einops>=0.8.2",
+    "timm>=0.9.10,<1.0",
+    "sentencepiece>=0.1.99",
+    "setuptools<=70.2.0",
+    "torchaudio>=2.11.0",
+    "nvidia-nvshmem-cu12>=3.4.5",
+    "draccus>=0.8",
+    "accelerate>=0.25",
+    "json-numpy>=2.1.1",
+    "jsonlines>=4.0.0",
+    "rich>=15.0.0",
 ]
 
+[[tool.uv.index]]
+name = "pytorch-cu129"
+url = "https://download.pytorch.org/whl/cu129"
+explicit = true
+
+[tool.uv.sources]
+torch = { index = "pytorch-cu129" }
+torchvision = { index = "pytorch-cu129" }
+torchaudio = { index = "pytorch-cu129" }
+
 [tool.setuptools]
-py-modules = ["datasets", "orchestrator", "agents", "models", "jax_agents", "jax_models"]
+py-modules = [
+    "datasets", "orchestrator", "agents", "environments",
+    "models", "jax_agents", "jax_models",
+    "vla_models", "vla_agent", "vla_datasets", "vla_orchestrator",
+]
 
 [tool.setuptools.packages.find]
 include = ["configs*", "envs*", "projects*"]
@@ -31,5 +59,5 @@ testpaths = ["tests"]
 python_files = ["test_*.py"]
 
 [build-system]
-requires = ["setuptools>=75.0"]
+requires = ["setuptools<=70.2.0"]
 build-backend = "setuptools.build_meta"
