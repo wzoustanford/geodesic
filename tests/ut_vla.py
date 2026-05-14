@@ -64,20 +64,41 @@ def ut1_vla_forward_backward():
     loader = DataLoader(f, batch_size=2, collate_fn=collator)
     batch = next(iter(loader))
 
-    # --- sub-check 1: agent.update() — forward + backward + metrics ---
-    metrics = agent.update(batch)
-    expected = {"loss", "action_token_acc", "action_l1"}
-    assert set(metrics) == expected, set(metrics)
-    assert math.isfinite(metrics["loss"]), metrics["loss"]
-    has_grad = any(
-        p.grad is not None and p.grad.abs().sum().item() > 0
-        for p in agent.policy.parameters()
-        if p.requires_grad
+    # Snapshot a few LoRA params (CPU copies) so we can verify update() actually
+    # moves them after the loop below. Complements the loss-decrease check:
+    #   - param movement       => optimizer.step actually fired
+    #   - loss decreasing      => gradients point in the right direction
+    # Either one passing alone is insufficient (e.g. params could move under
+    # an accidental sign-flipped autograd hookup while loss goes the wrong way).
+    sampled_before = {}
+    for n, p in agent.policy.named_parameters():
+        if p.requires_grad:
+            sampled_before[n] = p.detach().clone().to("cpu")
+            if len(sampled_before) >= 5:
+                break
+
+    # --- sub-check 1: agent.update() — forward + backward + optimizer.step all
+    #     functional. Run N updates on the same batch and assert (a) loss drops
+    #     and (b) sampled trainable params moved. With 27M LoRA params and a
+    #     2-sample batch the model should memorize trivially.
+    N = 3
+    losses = []
+    for _ in range(N):
+        metrics = agent.update(batch)
+        losses.append(metrics["loss"])
+        assert set(metrics) == {"loss", "action_token_acc", "action_l1"}, set(metrics)
+        assert math.isfinite(metrics["loss"]), metrics["loss"]
+    assert losses[-1] < losses[0], (
+        f"loss should decrease over {N} updates on a fixed batch; got {losses}"
     )
-    assert has_grad, "no trainable param received a non-zero gradient"
-    print(f"  update():   loss={metrics['loss']:.4f}  "
-          f"action_token_acc={metrics['action_token_acc']:.4f}  "
-          f"action_l1={metrics['action_l1']:.4f}")
+    moved = any(
+        not torch.equal(p.detach().to("cpu"), sampled_before[n])
+        for n, p in agent.policy.named_parameters()
+        if n in sampled_before
+    )
+    assert moved, "no sampled trainable param changed after update — optimizer.step didn't fire"
+    print(f"  update() x{N}: losses={['{:.4f}'.format(l) for l in losses]}  "
+          f"(loss {losses[0]:.4f} -> {losses[-1]:.4f}, params moved)")
 
     # --- sub-check 2: agent.validate() — forward-only, val_-prefixed metrics ---
     vmetrics = agent.validate(batch)
