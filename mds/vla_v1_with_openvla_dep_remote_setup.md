@@ -58,6 +58,14 @@ source ~/.bashrc
 echo 'export HF_TOKEN=hf_...' >> ~/.bashrc
 source ~/.bashrc
 
+## set these environment variables 
+export HF_TOKEN="hf_..."
+
+## the caches will store python packages, the HF VLA model, and the LIBERO data, so put them where you have HD storage; for LIBERO data, point to the cloned location below in step 9 
+export UV_CACHE_DIR=/scratch/zouwil/.cache/uv/
+export HF_HOME="/scratch/zouwil/.cache/huggingface/"
+export VLA_DATA_ROOT='/scratch/zouwil/code/modified_libero_rlds/'
+
 # 8. Smoke-test.
 cd ~/code/geodesic
 PYTHONPATH=$PYTHONPATH .venv/bin/python tests/ut_vla_dataset_fixture.py   # 4 UTs, all OK
