@@ -19,9 +19,15 @@ Requires:
 Skips cleanly (exit 0) if any prerequisite is missing, so the file is safe to
 import and parse anywhere.
 """
+import os
+
+# Silence TF Grappler PredictCost warnings — the cost-estimator heuristic chokes
+# on unknown-shape CropAndResize inputs during image_aug, but the ops still
+# execute correctly. Must be set BEFORE tensorflow is imported anywhere.
+os.environ.setdefault("TF_CPP_MIN_LOG_LEVEL", "2")
+
 import importlib.util
 import math
-import os
 import sys
 
 import torch
@@ -115,15 +121,23 @@ def ut1_vla_rlds_train():
     )
 
     # --- sub-check 2: DataLoader + collator emit a model-shaped batch ---
+    # Smoke-test batch size: smaller than data_cfg.TRAIN_BATCH_SIZE (16) to fit
+    # a 40GB A100. openvla's batch=16 default (finetune.py:87) assumes 8x A100
+    # 80GB via DDP (finetune.py:204), so effective per-GPU batch is 2. On a
+    # single 40GB A100 with the full 7B forward+backward, batch=16 OOMs.
+    # Production training should use data_cfg.TRAIN_BATCH_SIZE with
+    # grad_accumulation_steps to recover the effective batch size.
+    SMOKE_BATCH_SIZE = 2
+
     collator = PaddedCollatorForActionPrediction()
     loader = DataLoader(
         rlds_dataset,
-        batch_size=data_cfg.TRAIN_BATCH_SIZE,
+        batch_size=SMOKE_BATCH_SIZE,
         num_workers=data_cfg.NUM_WORKERS,   # MUST be 0 per finetune.py:237
         collate_fn=collator,
     )
     batch = next(iter(loader))
-    B = data_cfg.TRAIN_BATCH_SIZE
+    B = SMOKE_BATCH_SIZE
     assert batch["pixel_values"].shape == (B, 6, 224, 224), batch["pixel_values"].shape
     assert batch["input_ids"].dim() == 2 and batch["input_ids"].shape[0] == B
     assert batch["attention_mask"].dtype == torch.bool
