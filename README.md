@@ -5,7 +5,10 @@ Geodesic: shortest path to deployment for reinforcement learning
 
 Applications: Robotics, VLA, LLM Post-training, RL research 
 
-## News
+## News 
+
+May 13th, 2026: VLA, the first robotics/phsical AI foundation model, OpenVLA 7B training/fine-tuning from LIBEROS is now supported through [PR12](https://github.com/wzoustanford/geodesic/pull/12).
+
 April 20th, 2026: Geodesic supports Ray integration [PR11](https://github.com/wzoustanford/geodesic/pull/11). Parallel experience replay is implemented with distributed tasks.
 
 April 16th, 2026: Geodesic supports JAX, for SAC on Metaworld [PR9](https://github.com/wzoustanford/geodesic/pull/9). 
