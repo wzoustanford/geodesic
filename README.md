@@ -88,15 +88,20 @@ Runtime architecture: [Ray + JAX robotics/VLA runtime](mds/ray_jax_runtime.md)
 ## Algorithms 
 - DQN (Q-learning)
 - SAC (Soft Actor Critic)
+- VLA (Vision Language Models)
 
 ## Action spaces  
 - Binary (QL)
 - Discrete/multinomial (QL)
-- Continous (SAC) 
+- Continous (SAC)
+- Embodiments (OXE, LIBROS)
 
 ## JAX 
-- Multi-task RL on metaworld
-- MTSAC 
+- Multi-task RL on metaworld 
+- MTSAC
+
+## RAY 
+- Parallel replay on metaworld 
 
 JAX speed-up 
 ![alt text](imgs/metaworld_mt10_jax_vs_pytorch.png)
