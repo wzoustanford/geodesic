@@ -59,31 +59,7 @@ works with offline trajetories to be split into train/val/test sets
 
 Runtime architecture: [Ray + JAX robotics/VLA runtime](mds/ray_jax_runtime.md)
 
-```
-┌─────────────────────────── Geodesic runtime ───────────────────────────┐
-│                                                                        │
-│   ┌──────────────────────┐      ┌───────────────────────────────────┐  │
-│   │ Ray replay workers   │─────▶│ ParallelReplayBuffer              │  │
-│   │ (parallel rollouts)  │      │  – TransitionDataset              │  │
-│   └──────────────────────┘      │  – SequenceDataset  (+ images)    │  │
-│           ▲                     │  – VLADataset  (RLDS bridge) NEW  │  │
-│           │ actions             └──────────────┬────────────────────┘  │
-│           │                                    │ batches               │
-│   ┌───────┴─────────────┐   forward/CE loss   ▼                        │
-│   │  Env (Metaworld /   │    ┌────────────────────────────────────┐    │
-│   │  LIBERO / DROID     │◀───│         VLAAgent(Agent)   NEW      │    │
-│   │  RLDS replay)       │    │   wraps OpenVLAForActionPrediction │    │
-│   └─────────────────────┘    │   – predict_action()               │    │
-│                              │   – update_actor()  (next-tok CE)  │    │
-│                              │   – FSDP / LoRA / bf16             │    │
-│                              └─────────────┬──────────────────────┘    │
-│                                            │                           │
-│                              ┌─────────────▼──────────────────────┐    │
-│                              │   HF openvla/openvla-7b weights    │    │
-│                              │   Llama-2-7B + DINOv2 + SigLIP     │    │
-│                              └────────────────────────────────────┘    │
-└────────────────────────────────────────────────────────────────────────┘
-```
+![alt text](imgs/vla_design.png)
 
 ## Algorithms 
 - DQN (Q-learning)
