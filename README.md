@@ -59,7 +59,7 @@ works with offline trajetories to be split into train/val/test sets
 
 Runtime architecture: [Ray + JAX robotics/VLA runtime](mds/ray_jax_runtime.md)
 
-<img src="imgs/vla_design.png" alt="alt text" width="400">
+<img src="imgs/vla_design.png" alt="alt text" width="600">
 
 ## Algorithms 
 - DQN (Q-learning)
