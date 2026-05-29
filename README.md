@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="imgs/geodesic_banner.png" alt="Geodesic — the shortest path to deployment for reinforcement learning" width="100%">
+  <img src="imgs/geodesic_banner.svg" alt="Geodesic — the shortest path to deployment for reinforcement learning" width="100%">
 </p>
 
 <h1 align="center">Geodesic</h1>
