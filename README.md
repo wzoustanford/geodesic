@@ -2,8 +2,6 @@
   <img src="imgs/geodesic_banner.svg" alt="Geodesic — the shortest path to deployment for reinforcement learning" width="100%">
 </p>
 
-<h1 align="center">Geodesic</h1>
-
 <p align="center">
   <b>An open-source reinforcement-learning framework — the shortest path to deployment.</b><br>
   One agent/environment/dataset contract, two numerical backends (JAX + PyTorch), distributed by default with Ray.
