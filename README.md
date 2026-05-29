@@ -24,7 +24,7 @@
 
 ## Why Geodesic?
 
-Most RL repos lock you into one algorithm, one backend, and one scale. Geodesic is built around a small set of stable abstractions so that the *same* training code runs from a laptop smoke test to a multi-node GPU cluster, and so that switching from PyTorch to JIT-compiled JAX is a change of agent class — not a rewrite.
+Rather than being confined to one algorithm, one backend, one framework, and one scale. Geodesic is built around a small set of stable abstractions so that the *same* training code runs from a laptop smoke test to a multi-node GPU cluster, and so that switching from PyTorch to JIT-compiled JAX is a change of agent class.
 
 - **Dual backend, one interface.** `SACAgent` (PyTorch) and `JAXSACAgent` (JAX/Flax/Optax) implement the same `Agent` contract. The JAX path inherits directly from the PyTorch agent and overrides only the numerical core, so the orchestrator, dataset, and environment code are shared verbatim.
 - **Distributed by design.** Experience collection runs in parallel `Ray` actors that push transitions through a `Ray Queue` into a replay buffer, while training stays centralized on the learner. Data-collection throughput scales independently of training compute.
