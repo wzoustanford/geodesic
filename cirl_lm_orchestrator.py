@@ -24,6 +24,7 @@ sites where Context-IRL diverges from upstream are marked with ``### MOD:``.
 import os
 import math
 import time
+import copy
 import inspect
 from dataclasses import dataclass
 
@@ -32,78 +33,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-
-# =============================================================================
-# REWARD TRANSFORMER — nanoGPT model code, two marked modifications
-# =============================================================================
-
-class LayerNorm(nn.Module):
-    """ LayerNorm but with an optional bias.  (nanoGPT) """
-    def __init__(self, ndim, bias):
-        super().__init__()
-        self.weight = nn.Parameter(torch.ones(ndim))
-        self.bias   = nn.Parameter(torch.zeros(ndim)) if bias else None
-    def forward(self, x):
-        return F.layer_norm(x, self.weight.shape, self.weight, self.bias, 1e-5)
-
-
-class SelfAttention(nn.Module):
-    """ nanoGPT's CausalSelfAttention.  ### MOD: is_causal=False (bidirectional for Context-IRL). """
-    def __init__(self, config):
-        super().__init__()
-        assert config.n_embd % config.n_head == 0
-        self.c_attn = nn.Linear(config.n_embd, 3 * config.n_embd, bias=config.bias)
-        self.c_proj = nn.Linear(config.n_embd, config.n_embd,     bias=config.bias)
-        self.attn_dropout  = nn.Dropout(config.dropout)
-        self.resid_dropout = nn.Dropout(config.dropout)
-        self.n_head, self.n_embd, self.dropout = config.n_head, config.n_embd, config.dropout
-        self.flash = hasattr(F, 'scaled_dot_product_attention')
-        if not self.flash:
-            print("WARNING: using slow attention. Flash Attention requires PyTorch >= 2.0")
-
-    def forward(self, x):
-        B, T, C = x.size()
-        q, k, v = self.c_attn(x).split(self.n_embd, dim=2)
-        k = k.view(B, T, self.n_head, C // self.n_head).transpose(1, 2)
-        q = q.view(B, T, self.n_head, C // self.n_head).transpose(1, 2)
-        v = v.view(B, T, self.n_head, C // self.n_head).transpose(1, 2)
-        if self.flash:
-            y = F.scaled_dot_product_attention(
-                q, k, v, attn_mask=None,
-                dropout_p=self.dropout if self.training else 0,
-                is_causal=False,                       ### MOD: bidirectional
-            )
-        else:
-            att = (q @ k.transpose(-2, -1)) * (1.0 / math.sqrt(k.size(-1)))
-            att = F.softmax(att, dim=-1)               ### MOD: no causal mask
-            att = self.attn_dropout(att)
-            y = att @ v
-        y = y.transpose(1, 2).contiguous().view(B, T, C)
-        return self.resid_dropout(self.c_proj(y))
-
-
-class MLP(nn.Module):                                  # nanoGPT
-    def __init__(self, config):
-        super().__init__()
-        self.c_fc    = nn.Linear(config.n_embd, 4 * config.n_embd, bias=config.bias)
-        self.gelu    = nn.GELU()
-        self.c_proj  = nn.Linear(4 * config.n_embd, config.n_embd, bias=config.bias)
-        self.dropout = nn.Dropout(config.dropout)
-    def forward(self, x):
-        return self.dropout(self.c_proj(self.gelu(self.c_fc(x))))
-
-
-class Block(nn.Module):                                # nanoGPT
-    def __init__(self, config):
-        super().__init__()
-        self.ln_1 = LayerNorm(config.n_embd, bias=config.bias)
-        self.attn = SelfAttention(config)
-        self.ln_2 = LayerNorm(config.n_embd, bias=config.bias)
-        self.mlp  = MLP(config)
-    def forward(self, x):
-        x = x + self.attn(self.ln_1(x))
-        x = x + self.mlp(self.ln_2(x))
-        return x
+from lm_models import LayerNorm, SelfAttention, MLP, Block
 
 
 @dataclass
@@ -115,6 +45,7 @@ class RewardGPTConfig:
     n_embd:     int = 64
     dropout:  float = 0.0
     bias:      bool = False
+    is_causal:  bool = False                # preserves bidirectional attention (Context-IRL default)
 
 
 class RewardGPT(nn.Module):
@@ -163,16 +94,27 @@ class RewardGPT(nn.Module):
         x = self.transformer.ln_f(x)
         return torch.sigmoid(self.reward_head(x)).squeeze(-1)              ### MOD 2
 
-    def configure_optimizers(self, weight_decay, learning_rate, betas, device_type):
-        # nanoGPT verbatim
-        param_dict = {pn: p for pn, p in self.named_parameters() if p.requires_grad}
-        decay   = [p for _, p in param_dict.items() if p.dim() >= 2]
-        nodecay = [p for _, p in param_dict.items() if p.dim() <  2]
-        groups = [{'params': decay,   'weight_decay': weight_decay},
-                  {'params': nodecay, 'weight_decay': 0.0}]
-        fused_ok = 'fused' in inspect.signature(torch.optim.AdamW).parameters
-        extra = dict(fused=True) if (fused_ok and device_type == 'cuda') else {}
-        return torch.optim.AdamW(groups, lr=learning_rate, betas=betas, **extra)
+
+def configure_optimizers(model, weight_decay, learning_rate, betas, device_type):
+    """nanoGPT-style AdamW: 2D weights get weight-decayed, <2D don't; fused on CUDA."""
+    param_dict = {pn: p for pn, p in model.named_parameters()}
+    param_dict = {pn: p for pn, p in param_dict.items() if p.requires_grad}
+    decay_params   = [p for _, p in param_dict.items() if p.dim() >= 2]
+    nodecay_params = [p for _, p in param_dict.items() if p.dim() <  2]
+    optim_groups = [
+        {'params': decay_params,   'weight_decay': weight_decay},
+        {'params': nodecay_params, 'weight_decay': 0.0},
+    ]
+    num_decay   = sum(p.numel() for p in decay_params)
+    num_nodecay = sum(p.numel() for p in nodecay_params)
+    print(f"num decayed parameter tensors: {len(decay_params)}, with {num_decay:,} parameters")
+    print(f"num non-decayed parameter tensors: {len(nodecay_params)}, with {num_nodecay:,} parameters")
+    fused_available = 'fused' in inspect.signature(torch.optim.AdamW).parameters
+    use_fused = fused_available and device_type == 'cuda'
+    extra_args = dict(fused=True) if use_fused else dict()
+    optimizer = torch.optim.AdamW(optim_groups, lr=learning_rate, betas=betas, **extra_args)
+    print(f"using fused AdamW: {use_fused}")
+    return optimizer
 
 
 # =============================================================================
@@ -310,8 +252,11 @@ class ContextIRLOrchestrator:
                         'best_val_loss': best_val_loss,
                         'config':        c,
                     }
-                    torch.save(ckpt, os.path.join(c['out_dir'], 'ckpt.pt'))
-                    print(f"  saved checkpoint -> {c['out_dir']}/ckpt.pt")
+                    iters_per_epoch = c.get('iters_per_epoch')
+                    fname = (f'ckpt_epoch{iter_num // iters_per_epoch + 1}.pt'
+                             if iters_per_epoch else 'ckpt.pt')
+                    torch.save(ckpt, os.path.join(c['out_dir'], fname))
+                    print(f"  saved checkpoint -> {c['out_dir']}/{fname}")
 
             if iter_num == 0 and c['eval_only']:
                 break
@@ -330,6 +275,203 @@ class ContextIRLOrchestrator:
             t1 = time.time(); dt = t1 - t0; t0 = t1
             if iter_num % c['log_interval'] == 0:
                 print(f"iter {iter_num:>6d}: loss {loss.item():.4f}  acc {acc.item():.3f}  "
+                      f"lr {lr:.2e}  dt {dt*1000:.0f}ms")
+            iter_num += 1
+            if iter_num > c['max_iters']:
+                break
+
+
+class ActorFromCIRLOrchestrator:
+    """Train an LMPolicyCritic actor against pre-computed per-position rewards.
+
+    DQN-style TD loss (per-batch, vectorized over time t = 1..N-1):
+        target_t = r(t+1) + gamma * max_{a'} Q_{tgt}(s_{t+1}, a')        # detached
+        loss     = ((Q_t - target_t) ** 2).mean()
+    where Q_t = output[:, t-1, tokens[:, t]] from the policy/critic forward.
+
+    Rewards must arrive pre-computed via get_batch(split) -> (tokens, rewards),
+    each (B, N). The reward model itself never appears here — it ran offline
+    (see data/lm/prepare_rewards.py for the pre-caching pipeline).
+
+    Bootstrap source for max_{a'} Q_{tgt}:
+        config['use_target_net']=False (default)  -> online policy_critic (detached).
+        config['use_target_net']=True             -> Polyak-averaged target net at
+                                                     rate config['tau'] per step.
+    """
+    def __init__(
+        self,
+        policy_critic,            # LMPolicyCritic — combined actor + critic
+        optimizer,
+        scaler,
+        autocast_ctx,             # autocast manager (nullcontext on CPU)
+        get_batch,                # callable: split -> (tokens, rewards) both (B, N)
+        get_lr,
+        config,
+    ):
+        if getattr(getattr(policy_critic, 'config', None), 'is_causal', None) is not True:
+            raise ValueError(
+                "ActorFromCIRLOrchestrator requires a causal policy_critic; "
+                "set is_causal=True on its config (e.g. LMPolicyCriticConfig)."
+            )
+        self.policy_critic = policy_critic
+        self.optimizer = optimizer
+        self.scaler = scaler
+        self.autocast_ctx = autocast_ctx
+        self.get_batch = get_batch
+        self.get_lr = get_lr
+        self.config = config
+        self.gamma                 = config['gamma']
+        self.use_target_net        = config.get('use_target_net', False)
+        self.tau                   = config.get('tau', 0.005)
+        self.bootstrap_mode        = config.get('bootstrap_mode', 'argmax')
+        self.bootstrap_temperature = config.get('bootstrap_temperature', 1.0)
+        self.target_net = None
+        if self.use_target_net:
+            self.target_net = copy.deepcopy(policy_critic).eval()
+            for p in self.target_net.parameters():
+                p.requires_grad_(False)
+
+    def _td_loss(self, tokens, rewards):
+        """TD loss for one (tokens, rewards) batch.
+
+        Bootstrap modes (config['bootstrap_mode']):
+            'argmax'   (default) — Q_next = max_{a'} Q(s', a').
+            'expected'           — Q_next = sum_{a'} softmax(Q(s', .) / T)_{a'} * Q(s', a').
+        """
+        Q = self.policy_critic(tokens, mode='train')                              # (B, N, V), ReLU'd
+        predicted_Q = Q[:, :-1, :].gather(2, tokens[:, 1:].unsqueeze(2)).squeeze(2)  # (B, N-1)
+        with torch.no_grad():
+            src = self.target_net if self.target_net is not None else self.policy_critic
+            Q_next_all = src(tokens, mode='train')[:, 1:, :]                       # (B, N-1, V)
+            if self.bootstrap_mode == 'argmax':
+                Q_next = Q_next_all.max(dim=-1).values                              # (B, N-1)
+            elif self.bootstrap_mode == 'expected':
+                probs  = torch.softmax(Q_next_all / self.bootstrap_temperature, dim=-1)
+                Q_next = (probs * Q_next_all).sum(dim=-1)                           # (B, N-1)
+            else:
+                raise ValueError(self.bootstrap_mode)
+        target = rewards[:, 1:] + self.gamma * Q_next
+        loss = ((predicted_Q - target.detach()) ** 2).mean()
+        return loss, predicted_Q.detach().mean()       # (loss, Q): Q is mean predicted Q over the batch
+
+    def select_action(self, tokens, mode='argmax', temperature=1.0, top_k=None):
+        """Pick next action given a context sequence (text-generation interface).
+
+        tokens:      (B, T) LongTensor — current context, T <= block_size.
+        mode:        'argmax' (deterministic) or 'sample' (stochastic).
+        temperature: scales Q before softmax in 'sample' mode.
+        top_k:       if int, restrict 'sample' to top-k Q values (nanoGPT-style).
+        returns:     (B,) LongTensor of selected next tokens.
+        """
+        with torch.no_grad():
+            Q_last = self.policy_critic(tokens, mode='train')[:, -1, :]            # (B, V), ReLU'd
+            if mode == 'argmax':
+                return Q_last.argmax(dim=-1)
+            if mode == 'sample':
+                logits = Q_last / temperature
+                if top_k is not None:
+                    v, _ = torch.topk(logits, min(top_k, logits.size(-1)))
+                    logits[logits < v[:, [-1]]] = -float('Inf')
+                probs = F.softmax(logits, dim=-1)
+                return torch.multinomial(probs, num_samples=1).squeeze(-1)
+            raise ValueError(mode)
+
+    def _soft_update_target(self):
+        """Polyak-averaged update of target_net params from policy_critic params.
+
+        No-op when self.target_net is None (vanilla mode, no target network).
+        """
+        if self.target_net is None:
+            return
+        with torch.no_grad():
+            for p_target, p_online in zip(self.target_net.parameters(),
+                                          self.policy_critic.parameters()):
+                # tensor.lerp_(other, weight) is in-place:
+                #   self = self * (1 - weight) + other * weight
+                # so p_target = (1 - tau) * p_target + tau * p_online — Polyak averaging.
+                p_target.data.lerp_(p_online.data, self.tau)
+
+    @torch.no_grad()
+    def _evaluate(self):
+        """Average TD loss + mean predicted Q over `eval_iters` val batches only.
+
+        Returns dict with 'val_loss' and 'val_Q'. Higher val_Q means the
+        policy/critic predicts higher expected return on held-out data.
+        Train metrics are reported from the live training step, not re-computed here.
+        """
+        c = self.config
+        self.policy_critic.eval()
+        losses, Qs = torch.zeros(c['eval_iters']), torch.zeros(c['eval_iters'])
+        for i in range(c['eval_iters']):
+            tokens, rewards = self.get_batch('val')
+            with self.autocast_ctx:
+                loss, Q = self._td_loss(tokens, rewards)
+            losses[i], Qs[i] = loss.item(), Q.item()
+        self.policy_critic.train()
+        return {'val_loss': losses.mean().item(), 'val_Q': Qs.mean().item()}
+
+    def start(self):
+        c = self.config
+        iter_num = 0
+        best_val_loss = float('inf')                  # global minimum across all training
+        iters_per_epoch = c.get('iters_per_epoch')    # optional; only affects progress filename
+        t0 = time.time()
+        print('-' * 10 + 'starting actor training' + '-' * 10)
+
+        while True:
+            # --- LR schedule for this iter ---
+            lr = self.get_lr(iter_num) if c['decay_lr'] else c['learning_rate']
+            for pg in self.optimizer.param_groups:
+                pg['lr'] = lr
+
+            # --- val eval + dual checkpointing at every eval_interval ---
+            if iter_num % c['eval_interval'] == 0:
+                m = self._evaluate()
+                print(f"step {iter_num:>6d} | "
+                      f"val loss {m['val_loss']:.4f} Q {m['val_Q']:.3f}  |  lr {lr:.2e}")
+                if iter_num > 0:
+                    ckpt = {
+                        'policy_critic': self.policy_critic.state_dict(),
+                        'optimizer':     self.optimizer.state_dict(),
+                        'iter_num':      iter_num,
+                        'val_loss':      m['val_loss'],
+                        'val_Q':         m['val_Q'],
+                        'config':        c,
+                    }
+                    # (1) progress snapshot — overwritten within each epoch
+                    if iters_per_epoch:
+                        progress_fname = f'ckpt_epoch{iter_num // iters_per_epoch + 1}.pt'
+                    else:
+                        progress_fname = 'ckpt_progress.pt'
+                    torch.save(ckpt, os.path.join(c['out_dir'], progress_fname))
+                    print(f"  saved progress -> {c['out_dir']}/{progress_fname}")
+                    # (2) global best — single file, overwritten only when val_loss is below all-time min
+                    if m['val_loss'] < best_val_loss:
+                        best_val_loss = m['val_loss']
+                        ckpt['best_val_loss'] = best_val_loss
+                        torch.save(ckpt, os.path.join(c['out_dir'], 'ckpt_best.pt'))
+                        print(f"  saved best     -> {c['out_dir']}/ckpt_best.pt (val_loss={best_val_loss:.4f})")
+
+            if iter_num == 0 and c['eval_only']:
+                break
+
+            # --- training step (linear order: fetch batch -> compute loss -> step) ---
+            X, R = self.get_batch('train')
+            with self.autocast_ctx:
+                loss, Q = self._td_loss(X, R)
+            self.scaler.scale(loss).backward()
+            if c['grad_clip'] != 0.0:
+                self.scaler.unscale_(self.optimizer)
+                torch.nn.utils.clip_grad_norm_(self.policy_critic.parameters(), c['grad_clip'])
+            self.scaler.step(self.optimizer)
+            self.scaler.update()
+            self.optimizer.zero_grad(set_to_none=True)
+            self._soft_update_target()                # no-op when target_net is None
+
+            # --- per-iter logging (train side) ---
+            t1 = time.time(); dt = t1 - t0; t0 = t1
+            if iter_num % c['log_interval'] == 0:
+                print(f"iter {iter_num:>6d}: train loss {loss.item():.4f}  Q {Q.item():.3f}  "
                       f"lr {lr:.2e}  dt {dt*1000:.0f}ms")
             iter_num += 1
             if iter_num > c['max_iters']:

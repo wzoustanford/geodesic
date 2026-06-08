@@ -1,19 +1,16 @@
-"""End-to-end smoke test for ContextIRLOrchestrator on Shakespeare BPE data.
+"""1-2 epoch training run of ContextIRLOrchestrator on Shakespeare BPE data.
 
-Data is prepared by data/lm/prepare.py (downloads tiny shakespeare and tokenizes
-with GPT-2 BPE). The test auto-runs prepare.py if train.bin is missing.
-
-Surrogates are sampled uniformly across the vocabulary by default; the unigram
-counts are still computed (exercising the compute_tf_counts pipeline) but not
-used for sampling here. Asserts that loss drops below the random-chance
-baseline log(K).
+Loads tokenized Shakespeare from data/lm (auto-runs prepare.py if missing).
+Trains a RewardGPT for ~2 epochs with linear-warmup + cosine LR decay and
+val-loss-driven checkpointing. Surrogates are sampled uniformly across
+vocab; unigram counts are still computed (pipeline exercise) but not used.
+Asserts final loss drops well below the random-chance baseline log(K).
 """
 
 import math
 import os
 import subprocess
 import sys
-import tempfile
 from contextlib import nullcontext
 
 import torch
@@ -24,10 +21,11 @@ from cirl_lm_orchestrator import (
     get_batch, compute_tf_counts, estimate_loss, get_lr, configure_optimizers,
 )
 
-DATA_DIR = os.path.abspath(
-    os.path.join(os.path.dirname(__file__), '..', 'data', 'lm')
-)
+REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+DATA_DIR  = os.path.join(REPO_ROOT, 'data', 'lm')
+CKPT_DIR  = os.path.join(REPO_ROOT, 'ckpts', 'cirl_lm_shakespeare')
 VOCAB_SIZE = 50304   # nanoGPT convention; GPT-2 BPE actual vocab is 50257
+TRAIN_TOKENS = 301_966   # produced by data/lm/prepare.py
 
 
 def ensure_data():
@@ -47,27 +45,36 @@ def main():
     V = VOCAB_SIZE
     N, B = 64, 8
     K, D, gamma = 8, 10, 0.99
-    out_dir = tempfile.mkdtemp(prefix='cirl_ut_')
+    os.makedirs(CKPT_DIR, exist_ok=True)
+    out_dir = CKPT_DIR
+
+    iters_per_epoch = TRAIN_TOKENS // (B * N)
+    epochs = 2
+    max_iters = epochs * iters_per_epoch
 
     config = {
         'out_dir': out_dir,
-        'max_iters': 500,
-        'eval_interval': 50,
-        'eval_iters': 5,
-        'log_interval': 20,
+        'max_iters': max_iters,
+        'iters_per_epoch': iters_per_epoch,
+        'eval_interval': 100,
+        'eval_iters': 20,
+        'log_interval': 50,
         'eval_only': False,
-        'always_save_checkpoint': True,
-        'decay_lr': False,
-        'learning_rate': 3e-3,
-        'warmup_iters': 0,
-        'lr_decay_iters': 200,
-        'min_lr': 3e-5,
+        'always_save_checkpoint': False,    # save only when val improves
+        'decay_lr': True,
+        'learning_rate': 1e-3,
+        'warmup_iters': 100,
+        'lr_decay_iters': max_iters,
+        'min_lr': 1e-4,
         'grad_clip': 1.0,
     }
 
+    print(f"data_dir={DATA_DIR}  V={V}  iters_per_epoch={iters_per_epoch}  "
+          f"max_iters={max_iters} ({epochs} epochs)")
+
     # ---- model + IRL wrapper ----
     reward_conf = RewardGPTConfig(
-        block_size=N, vocab_size=V, n_layer=2, n_head=2, n_embd=32,
+        block_size=N, vocab_size=V, n_layer=2, n_head=4, n_embd=64,
     )
     reward_net = RewardGPT(reward_conf).to(device)
     tf_counts = compute_tf_counts(DATA_DIR, V)   # computed but not used in 'uniform' mode
@@ -109,17 +116,18 @@ def main():
     ).start()
 
     final = estimate_loss_fn()
-    print(f"final train loss {final['train_loss']:.4f}")
+    print(f"final train loss {final['train_loss']:.4f} acc {final['train_acc']:.3f}  |  "
+          f"val loss {final['val_loss']:.4f} acc {final['val_acc']:.3f}")
 
-    ckpt_path = os.path.join(out_dir, 'ckpt.pt')
-    assert os.path.exists(ckpt_path), f"checkpoint missing at {ckpt_path}"
+    ckpt_path = os.path.join(out_dir, f'ckpt_epoch{epochs}.pt')
+    assert os.path.exists(ckpt_path), f"final-epoch checkpoint missing at {ckpt_path}"
 
-    assert final['train_loss'] < log_K * 0.95, (
-        f"loss did not drop below random-chance baseline log(K)={log_K:.3f}: "
+    assert final['train_loss'] < log_K * 0.5, (
+        f"loss did not converge below 50% of random-chance baseline log(K)={log_K:.3f}: "
         f"got {final['train_loss']:.3f}"
     )
     print(f"OK — loss dropped from {initial['train_loss']:.3f} → "
-          f"{final['train_loss']:.3f} (below baseline {log_K:.3f})")
+          f"{final['train_loss']:.3f} (below 0.5 * baseline {log_K:.3f})")
 
 
 if __name__ == '__main__':
