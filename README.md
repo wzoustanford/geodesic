@@ -3,7 +3,7 @@
 </p>
 
 <p align="center">
-  <b>An open-source reinforcement-learning framework — the shortest path to deployment.</b><br>
+  <b>An open-source robotics and reinforcement-learning-native framework — the shortest path to deployment.</b><br>
   One agent/environment/dataset contract, two numerical backends (JAX + PyTorch), distributed by default with Ray.
 </p>
 
