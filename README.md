@@ -49,7 +49,7 @@ orc.start_online()
 |---|---|
 | **Algorithms** | DQN / double-Q (binary & multinomial-discrete action spaces), SAC (continuous), multi-task SAC, OpenVLA imitation learning |
 | **Backends** | PyTorch and JAX (`@jax.jit`, `optax`, `flax`, `distrax`), selectable per agent |
-| **Distributed** | Ray actors for parallel rollout, a shared replay buffer with a background drain thread, and a `ModelSharedStorage` parameter server |
+| **Distributed** | Ray actors for parallel rollout, a shared replay buffer with a background drain thread |
 | **Environments** | MetaWorld MT10/MT25/MT50 and meta-RL (ML1/ML10/ML45); LIBERO via RLDS for VLA; Atari integration in progress |
 | **Datasets** | Sequence replay with windowing/stride, offline train/val/test splits, prioritized-replay sum-tree (WIP), pluggable model- and rule-based rewards |
 | **Foundation models** | OpenVLA-7B fine-tuning (LoRA + bf16) wired into the same `Agent`/`Orchestrator` contract |
