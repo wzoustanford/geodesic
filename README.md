@@ -239,7 +239,6 @@ geodesic/
 
 ## Roadmap
 
-- **Streaming infrastructure** — a Kafka-like backbone for online RL, online learning, and episodic memory in real-time robotics.
 - **Prioritized replay** — promote the sum-tree `PrioritySampler` from sketch to a tested, production prioritized-replay path.
 - **Atari / EfficientZero** — DQN on Atari via a dedicated env stack and parallel replay (see [`mds/atari_env_efficient_zero_investigation.md`](mds/atari_env_efficient_zero_investigation.md)).
 - **LLM/VLA post-training** — GRPO/PPO post-training, replay-buffer construction, and contextual inference management.
